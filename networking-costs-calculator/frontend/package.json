@@ -9,7 +9,7 @@
     "react-archer": "^4.4.0",
     "react-component-export-image": "^1.0.6",
     "jspdf": "^4.0.0",
-    "react-dom": "^18.3.1",
+    "react-dom": "^19.2.3",
     "react-modal": "^3.16.3",
     "react-scripts": "^5.0.1",
     "react-widgets": "^5.8.6",
