@@ -31,7 +31,7 @@ jobs:
           submodules: false
 
       - name: Setup Infracost
-        uses: infracost/actions/setup@v3
+        uses: infracost/actions/setup@v4
         with:
           api-key: ${{ env.INFRACOST_API_KEY }}
 
@@ -128,7 +128,7 @@ jobs:
           fi
 
       - name: Post Infracost comment
-        uses: infracost/actions/comment@v3
+        uses: infracost/actions/comment@v4
         if: github.event_name == 'pull_request'
         with:
           path: infracost-outputs/*.json

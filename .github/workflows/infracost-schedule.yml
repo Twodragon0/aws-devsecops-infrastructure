@@ -34,7 +34,7 @@ jobs:
           submodules: false
 
       - name: Setup Infracost
-        uses: infracost/actions/setup@v3
+        uses: infracost/actions/setup@v4
         with:
           api-key: ${{ env.INFRACOST_API_KEY }}
 
