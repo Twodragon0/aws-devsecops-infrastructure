@@ -85,7 +85,7 @@ graph TB
 | 1주차 | 인프라의 본질 (On-Premise vs Cloud) | `VPC/`, `EC2/` | [강의 링크](https://twodragon.tistory.com) |
 | 2주차 | AWS 보안 아키텍처 (VPC, IAM, S3, GuardDuty) | `VPC/`, `IAM/`, `Lambda/AWS-API-Monitor/` | [강의 링크](https://twodragon.tistory.com) |
 | 3주차 | FinOps & ISMS-P (비용 최적화, 보안 감사) | `FinOps/`, `ISMS/` | [강의 링크](https://twodragon.tistory.com) |
-| 4주차 | 통합 보안 점검 (취약점 스캔, ISMS-P 대응) | `ISMS/`, `Lambda/AWS-API-Monitor/` | [강의 링크](https://twodragon.tistory.com) |
+| 4주차 | 통합 보안 점검 (취약점 스캔, ISMS-P 대응) | [Prowler → Security Hub CSPM 실습](ISMS/isms-p-cloud-audit/labs/securityhub-prowler/README.md), `Lambda/AWS-API-Monitor/` | [교육 저장소](https://github.com/Twodragon0/online-course) |
 | 5주차 | 거버넌스 & SIEM (Control Tower, Datadog) | `ControlTower/` | [강의 링크](https://twodragon.tistory.com) |
 | 8주차 | CI/CD & Kubernetes 보안 | `EKS/` | [강의 링크](https://twodragon.tistory.com) |
 | 9주차 | DevSecOps 통합 정리 | 전체 프로젝트 | [강의 링크](https://twodragon.tistory.com) |
@@ -401,7 +401,7 @@ aws lambda create-function \
 
 ### 강의 자료
 - [클라우드 시큐리티 강의 블로그](https://twodragon.tistory.com/category/*%20Twodragon/보안%20강의%20%28Course%29) - 실무형 클라우드 보안 강의
-- [강의 자료 인덱스](./docs/COURSES_INDEX.md) - 강의별 실습 가이드
+- [4주차 Prowler·Security Hub 실습 가이드](./ISMS/isms-p-cloud-audit/labs/securityhub-prowler/README.md) - 클라우드 시큐리티 교육 연계
 
 ### 프로젝트 문서
 - [AGENTS.md](./AGENTS.md) - AI 코딩 에이전트 가이드
