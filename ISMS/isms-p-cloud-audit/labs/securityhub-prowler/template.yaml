@@ -1,0 +1,37 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Optional week-4 lab for Security Hub CSPM and Prowler product findings in one Region.
+
+Parameters:
+  EnableLab:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'false'
+      - 'true'
+    Description: Set true only after checking the account, Region, current Hub state, and CSPM costs.
+
+Conditions:
+  CreateLab: !Equals [!Ref EnableLab, 'true']
+
+Resources:
+  SecurityHub:
+    Type: AWS::SecurityHub::Hub
+    Condition: CreateLab
+    Properties:
+      EnableDefaultStandards: false
+      AutoEnableControls: false
+      Tags:
+        Purpose: week4-securityhub-prowler-lab
+
+  ProwlerProduct:
+    Type: AWS::SecurityHub::ProductSubscription
+    Condition: CreateLab
+    DependsOn: SecurityHub
+    Properties:
+      ProductArn: !Sub 'arn:${AWS::Partition}:securityhub:${AWS::Region}::product/prowler/prowler'
+
+Outputs:
+  ProductArn:
+    Condition: CreateLab
+    Description: Prowler product ARN for the deployed Region.
+    Value: !Sub 'arn:${AWS::Partition}:securityhub:${AWS::Region}::product/prowler/prowler'

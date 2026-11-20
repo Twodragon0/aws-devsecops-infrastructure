@@ -4,6 +4,8 @@
 
 ## 개요
 
+4주차 온라인 교육에서 Prowler CSV/ASFF 결과를 Security Hub CSPM에 연결하는 실습은 [labs/securityhub-prowler](./labs/securityhub-prowler/README.md)에 있습니다. 기본은 로컬 결과 확인이며, CloudFormation으로 Hub를 켜고 Finding을 전송하는 단계는 선택적으로 실행합니다.
+
 ISMS-P 2025 가이드의 주요 요구사항:
 - **자산 식별 및 관리**: 클라우드 자산의 자동 식별 및 중요도 평가
 - **위험 평가**: CIA(기밀성, 무결성, 가용성) 기준 위험 평가
