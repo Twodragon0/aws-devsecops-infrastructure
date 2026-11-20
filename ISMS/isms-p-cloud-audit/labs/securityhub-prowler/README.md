@@ -49,7 +49,7 @@ aws cloudformation validate-template --profile twodragon --region ap-northeast-2
   --template-body file://template.yaml
 ```
 
-내일 해당 계정에서 CSPM 활성화와 비용을 확인한 **뒤에만** 다음 명령을 사용합니다. 이 스택은 서울 리전에 Hub를 새로 만들고 Prowler 제품을 구독합니다. 기존 Hub에는 적용하지 않습니다.
+해당 계정에서 CSPM 활성화와 비용을 확인한 **뒤에만** 다음 명령을 사용합니다. 이 스택은 서울 리전에 Hub를 새로 만들고 Prowler 제품을 구독합니다. 기존 Hub에는 적용하지 않습니다.
 
 ```bash
 printf '승인된 실습 계정 ID (12자리): '
@@ -91,7 +91,7 @@ if [[ "$EXPECTED_ACCOUNT" =~ ^[0-9]{12}$ && "$ACTUAL_ACCOUNT" = "$EXPECTED_ACCOU
     [[ "$SUBSCRIPTIONS" == *'/prowler/prowler'* ]]; then
     prowler aws --profile twodragon --region ap-northeast-2 \
       --compliance kisa_isms_p_2023_korean_aws \
-      --output-formats csv json-asff --output-directory ./output \
+      --output-formats csv --output-directory ./output \
       --security-hub --send-sh-only-fails --skip-sh-update
   else
     printf 'Security Hub CSPM 또는 Prowler 제품 구독을 확인할 수 없어 전송하지 않습니다.\n' >&2
@@ -103,7 +103,9 @@ else
 fi
 ```
 
-Security Hub CSPM 콘솔에서 제품을 Prowler로 필터링하고, 계정·리전·실행 시각과 전송 건수를 대조합니다. 전송에 실패한 Finding은 Prowler 로그에서 확인합니다. 서비스의 PASS/FAIL은 ISMS-P 인증 판정이 아닙니다.
+`--security-hub`가 ASFF 파일도 저장하므로 이 단계에서는 `json-asff`를 출력 형식에 중복 지정하지 않습니다. Prowler 5.50.0에서 두 옵션을 함께 지정하면 ASFF 배열이 파일에 두 번 이어져 단일 JSON 문서가 되지 않는 것을 확인했습니다.
+
+전송량을 줄인 부분 실습에서는 `--compliance ...`를 `--check CHECK_ID_1 CHECK_ID_2`로 **교체**합니다. 두 옵션을 함께 사용할 수 없습니다. Security Hub CSPM에서 제품을 Prowler로 필터링하고 계정·리전·실행 시각을 대조합니다. 수신 반영에는 시간이 걸릴 수 있으므로 Prowler의 전송 보고 건수와 조회 건수가 일치할 때까지 확인한 뒤 종료합니다. 전송에 실패한 Finding은 Prowler 로그에서 확인합니다. 서비스의 PASS/FAIL은 ISMS-P 인증 판정이 아닙니다.
 
 ## 제출 및 종료
 
