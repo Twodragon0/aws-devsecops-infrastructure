@@ -22,4 +22,7 @@ jobs:
         with:
           fail-on-severity: moderate
           deny-licenses: GPL-2.0, GPL-3.0
+          # aws-cdk-lib@2.277.0 bundles minimatch@10.2.6; npm overrides cannot replace it.
+          # Remove when AWS CDK publishes a bundle with minimatch >=11.0.1.
+          allow-ghsas: GHSA-g3hv-75wg-m249
 
