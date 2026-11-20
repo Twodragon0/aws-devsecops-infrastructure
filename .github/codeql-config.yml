@@ -5,6 +5,11 @@ queries:
   # 기본 보안 쿼리 사용
   - uses: security-and-quality
 
-# 참고: 파일 제외는 워크플로우의 paths-ignore에서 처리됩니다.
-# CodeQL은 기본적으로 .gitignore를 존중하므로
-# node_modules는 자동으로 제외됩니다.
+# 워크플로우의 on.paths-ignore는 실행 여부만 결정합니다.
+# 추적 중인 외부 패키지는 분석 설정에서 명시적으로 제외합니다.
+paths-ignore:
+  - '**/node_modules/**'
+  - 'EC2/terraform/modules/lambda/python/**'
+  - '**/.venv/**'
+  - '**/venv/**'
+  - '**/__pycache__/**'
