@@ -14,6 +14,40 @@
 
 한 번 `EnableLab=true`로 만든 스택을 나중에 `false`로 **업데이트하면 CloudFormation이 Hub와 구독을 삭제**합니다. `false`는 새 템플릿의 준비용 기본값일 뿐, 실행 중인 스택의 안전한 일시정지 스위치가 아닙니다. 스택을 업데이트하거나 삭제할 때는 Change Set으로 삭제 영향을 확인하고, 다른 점검이 Hub를 사용 중인지 먼저 확인합니다.
 
+## 비용을 최소화한 읽기 전용 실습
+
+아래 명령은 저장소 루트에서 실행합니다. AWS CLI와 Python 3, Prowler가 필요합니다.
+기존 SSO 세션을 사용하고, 만료됐으면 `aws sso login --profile twodragon`으로 갱신합니다.
+
+```bash
+aws inspector2 batch-get-account-status --profile twodragon --region ap-northeast-2
+python3 ISMS/isms-p-cloud-audit/labs/securityhub-prowler/test_event_patterns.py
+```
+
+패턴 테스트는 합성 이벤트 5개를 EventBridge의 `TestEventPattern`에 전달합니다.
+Security Hub CSPM의 ASFF 이벤트와 Inspector의 직접 Finding 이벤트에서 HIGH·CRITICAL 필터를 확인합니다.
+이 호출로 이벤트를 게시하거나 이벤트 규칙, 대상, 로그 그룹을 만들지 않습니다.
+Inspector 상태가 `DISABLED`이면 합성 이벤트로 필터만 확인합니다. 실제 스캔 및 이벤트 전달 검증은 별도 실습입니다.
+
+Prowler 결과 형식만 확인할 때는 점검 한 개를 실행해 CSV와 ASFF를 임시 디렉터리에 저장합니다.
+
+```bash
+umask 077
+report_dir=$(mktemp -d)
+prowler aws --profile twodragon --region ap-northeast-2 \
+  --check iam_root_hardware_mfa_enabled \
+  --output-formats csv json-asff --output-directory "$report_dir"
+```
+
+실제 CSPM 수신까지 필요한 경우에만 아래 선택 실습을 사용합니다.
+단일 리전에서 기본 표준을 끄고 필요한 FAIL만 전송합니다.
+CSPM의 월 10,000건 무료 한도는 Finding 수집에 적용되며 표준 점검과 자동화 규칙 평가에는 별도 과금 기준이 있습니다.
+Inspector는 스캔 유형별 무료 평가판 사용 여부와 대상 범위를 확인한 뒤 필요한 유형만 활성화합니다.
+
+- [EventBridge 패턴 테스트](https://docs.aws.amazon.com/cli/latest/userguide/cli_eventbridge_code_examples.html)
+- [Security Hub CSPM 이벤트 구조](https://docs.aws.amazon.com/securityhub/latest/userguide/securityhub-cwe-event-formats.html)
+- [Amazon Inspector 이벤트](https://docs.aws.amazon.com/eventbridge/latest/ref/events-ref-inspector2.html) 및 [사용량과 비용](https://docs.aws.amazon.com/inspector/latest/user/usage.html)
+
 ## 1. 범위와 현재 상태 확인
 
 아래 명령은 저장소 루트에서 실행합니다. 계정 ID·자원 ID와 원본 Finding은 교육 저장소에 커밋하지 않습니다.
