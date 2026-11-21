@@ -131,10 +131,22 @@ resource "aws_internet_gateway" "myproject_prod_igw" {
   }
 }
 
+# Elastic IP for the public NAT gateway
+resource "aws_eip" "myproject_prod_eip" {
+  domain = "vpc"
+
+  tags = {
+    Name      = "myproject-prod-nat-eip"
+    ManagedBy = "Terraform"
+  }
+}
+
 # NAT Gateway
 resource "aws_nat_gateway" "myproject_prod_nat_gateway" {
   allocation_id = aws_eip.myproject_prod_eip.id
   subnet_id     = aws_subnet.myproject_prod_public_subnet.id
+
+  depends_on = [aws_internet_gateway.myproject_prod_igw]
 
   tags = {
     Name      = "myproject-prod-nat-gateway"

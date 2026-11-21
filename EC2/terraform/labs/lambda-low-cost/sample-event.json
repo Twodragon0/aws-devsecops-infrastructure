@@ -1,0 +1,7 @@
+{
+  "findings": [
+    {"severity": "LOW", "title": "Synthetic training item A"},
+    {"severity": "HIGH", "title": "Synthetic training item B"},
+    {"severity": "CRITICAL", "title": "Synthetic training item C"}
+  ]
+}

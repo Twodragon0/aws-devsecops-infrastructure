@@ -1,0 +1,8 @@
+.terraform/
+!.terraform.lock.hcl
+__pycache__/
+*.tfstate
+*.tfstate.*
+*.tfplan
+lambda.zip
+response.json
