@@ -32,6 +32,21 @@ aws cloudformation validate-template --profile twodragon --region ap-northeast-2
 때는 이 알림 스택을 삭제하고, 이번 실습 때문에 새로 활성화한 스캔 유형만
 별도로 비활성화합니다.
 
+## 실습 결과 · 2026-11-21
+
+| 확인 항목 | 결과 |
+| --- | --- |
+| EventBridge 필터 | 합성 이벤트 4건에서 활성 HIGH·CRITICAL만 매칭 |
+| SNS 이메일 구독 | 확인 완료 |
+| Lambda → SNS → Gmail | 합성 이벤트를 Lambda에 직접 1회 호출해 HTTP 200과 발행 성공을 확인하고, 수신함에서 같은 테스트 식별자를 대조 |
+| 실제 Finding 전달 | 종료 전 HIGH·CRITICAL 0건으로 실이벤트의 EventBridge → Gmail 전달은 관찰하지 못함 |
+| 종료 | 알림 스택 `DELETE_COMPLETE`, 이번에 활성화한 Lambda 표준 스캔 `DISABLED` |
+| 비용 | 확인 시점 Cost Explorer에 Lambda 표준 스캔 항목 미반영. ECR 스캔 USD 0은 별도 항목 |
+
+비용이 반영되면 11월의 `Amazon Inspector` 비용을 사용 유형으로 나눠
+서울 리전 Lambda 표준 스캔의 사용량과 비용을 대조합니다. 월 중 Cost Explorer 금액은
+추정치이며 확정 금액은 월간 청구서에서 확인합니다.
+
 - [Inspector 이벤트 스키마](https://docs.aws.amazon.com/inspector/latest/user/eventbridge-integration.html)
 - [SNS 이메일 구독](https://docs.aws.amazon.com/sns/latest/dg/sns-email-notifications.html)
 - [Inspector 사용량과 비용](https://docs.aws.amazon.com/inspector/latest/user/usage.html)
