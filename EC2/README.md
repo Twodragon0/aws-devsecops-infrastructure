@@ -934,57 +934,30 @@ def get_cloudfront_info():
     return cloudfront_info
 ```
 
-### 2. Lambda 패키지 빌드 스크립트
+### 2. Lambda 패키지 빌드
 
-Lambda 함수를 배포하기 위해 필요한 패키지를 설치하고 ZIP 파일로 패키징하는 스크립트입니다.
-
-#### `build_lambda.sh`
-```bash
-#!/bin/bash
-
-# Lambda 함수 패키징
-cd terraform/modules/lambda
-
-# 가상환경 설정
-python3 -m venv venv
-source venv/bin/activate
-
-# 종속성 설치
-pip install -r ../../requirements.txt -t .
-
-# 패키지 압축
-zip -r aws_monitor.zip .
-
-# 가상환경 비활성화
-deactivate
-
-# 패키지 이동
-mv aws_monitor.zip ../lambda/aws_monitor.zip
-
-# 클린업
-rm -rf venv
-
-echo "Lambda 함수 패키징 완료: terraform/modules/lambda/aws_monitor.zip"
-```
-
-> **참고:** 이 스크립트는 Lambda 함수 디렉토리에서 실행되며, `requirements.txt`는 프로젝트 루트에 위치합니다. 필요에 따라 경로를 조정할 수 있습니다.
-
-### 3. Lambda 패키지 빌드 실행
-
-스크립트에 실행 권한을 부여하고 실행합니다.
+저장소 루트에서 Docker와 Python 3가 설치된 상태로 실행합니다.
 
 ```bash
-chmod +x build_lambda.sh
-./build_lambda.sh
+bash EC2/terraform/build_lambda.sh
 ```
 
-이 스크립트는 다음을 수행합니다:
+이 스크립트는 AWS Lambda Python 3.12 컨테이너의 Linux x86_64 환경에서
+`EC2/terraform/requirements.lock`에 고정된 의존성을 설치합니다.
+`lambda_layer.zip`은 의존성을 최상위 `python/` 경로에 담고,
+`aws_monitor.zip`은 함수 핸들러를 담습니다. 두 ZIP은 Terraform이 읽는
+`EC2/terraform/modules/lambda/`에 생성됩니다.
 
-1. **Lambda 함수 디렉토리로 이동**합니다.
-2. **Python 가상환경을 설정**하고 필요한 종속성을 설치합니다.
-3. **Lambda 함수 코드를 ZIP 파일로 패키징**합니다.
-4. **패키징된 ZIP 파일을 이동**시킵니다.
-5. **가상환경을 삭제**합니다.
+### 3. 의존성 변경
+
+`EC2/terraform/requirements.txt`를 수정한 뒤 잠금 파일과 두 ZIP을 갱신합니다.
+
+```bash
+uv pip compile EC2/terraform/requirements.txt --python-version 3.12 \
+  --python-platform x86_64-manylinux_2_34 --only-binary :all: --no-annotate \
+  -o EC2/terraform/requirements.lock
+bash EC2/terraform/build_lambda.sh
+```
 
 ### 4. Lambda 함수 업데이트
 
