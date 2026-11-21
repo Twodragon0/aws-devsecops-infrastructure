@@ -1,0 +1,133 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Email alerts for active high and critical Amazon Inspector findings.
+
+Parameters:
+  RecipientEmail:
+    Type: String
+    NoEcho: true
+    AllowedPattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
+  FunctionName:
+    Type: String
+    Default: aws-devsecops-inspector-email
+    AllowedPattern: '^[A-Za-z0-9_-]{1,64}$'
+
+Resources:
+  AlertsTopic:
+    Type: AWS::SNS::Topic
+
+  EmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: email
+      Endpoint: !Ref RecipientEmail
+      TopicArn: !Ref AlertsTopic
+
+  AlertLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${FunctionName}'
+      RetentionInDays: 1
+
+  AlertRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: WriteAlertLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${FunctionName}:log-stream:*'
+        - PolicyName: PublishAlert
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: sns:Publish
+                Resource: !Ref AlertsTopic
+
+  AlertFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: AlertLogs
+    Properties:
+      FunctionName: !Ref FunctionName
+      Runtime: python3.12
+      Architectures: [x86_64]
+      Handler: index.lambda_handler
+      Role: !GetAtt AlertRole.Arn
+      MemorySize: 128
+      Timeout: 10
+      Environment:
+        Variables:
+          ALERT_TOPIC_ARN: !Ref AlertsTopic
+      Code:
+        ZipFile: |
+          import os
+
+          import boto3
+
+          sns = boto3.client("sns")
+
+          def lambda_handler(event, _context):
+              if event.get("source") != "aws.inspector2" or event.get("detail-type") != "Inspector2 Finding":
+                  return {"published": False}
+              finding = event.get("detail", {})
+              severity = finding.get("severity")
+              if severity not in ("HIGH", "CRITICAL") or finding.get("status") != "ACTIVE":
+                  return {"published": False}
+
+              package = finding.get("packageVulnerabilityDetails") or {}
+              vulnerability = package.get("vulnerabilityId") or "AWS 콘솔에서 확인"
+              region = os.environ["AWS_REGION"]
+              message = "\n".join((
+                  f"심각도: {severity}",
+                  f"취약점 ID: {str(vulnerability)[:120]}",
+                  f"유형: {str(finding.get('type', 'UNKNOWN'))[:80]}",
+                  f"리전: {region}",
+                  "",
+                  f"상세 정보: https://{region}.console.aws.amazon.com/inspector/v2/home?region={region}#/findings",
+              ))
+              sns.publish(
+                  TopicArn=os.environ["ALERT_TOPIC_ARN"],
+                  Subject=f"Amazon Inspector {severity} finding",
+                  Message=message,
+              )
+              return {"published": True}
+
+  FindingRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Active high or critical Amazon Inspector finding events.
+      EventPattern:
+        source: [aws.inspector2]
+        detail-type: [Inspector2 Finding]
+        detail:
+          status: [ACTIVE]
+          severity: [HIGH, CRITICAL]
+      Targets:
+        - Id: InspectorEmail
+          Arn: !GetAtt AlertFunction.Arn
+
+  AllowEventBridge:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref AlertFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt FindingRule.Arn
+
+Outputs:
+  TopicArn:
+    Value: !Ref AlertsTopic
+  FunctionName:
+    Value: !Ref AlertFunction
