@@ -375,37 +375,22 @@ output "dynamodb_table_name" {
 
 ## Terraform 백엔드 구성
 
-백엔드 설정을 통해 Terraform 상태 파일을 S3에 저장하고, DynamoDB를 사용하여 상태 잠금을 관리합니다.
+EC2 구성은 기존 S3 버킷의 `ec2/terraform.tfstate`에 상태를 저장합니다.
+Terraform 1.10 이상을 사용하며, 잠금은 S3의 `ec2/terraform.tfstate.tflock`으로 관리합니다.
+이 구성에 IAM Identity Center 상태를 복사하거나 `-migrate-state`로 옮기지 않습니다.
 
-### `terraform/backend.tf`
-```hcl
-terraform {
-  backend "s3" {
-    bucket         = "aws-sso-tfstate"                         # S3 버킷 이름
-    key            = "iam_identity_center/terraform.tfstate"    # 상태 파일 경로
-    region         = "ap-northeast-2"                          # S3 버킷 지역
-    dynamodb_table = "TerraformStateLock"                      # DynamoDB 테이블 이름
-    encrypt        = true                                      # 상태 파일 암호화
-    acl            = "bucket-owner-full-control"
-  }
-}
+기존 버킷과 계정이 맞는지 확인한 뒤, 저장소 루트에서 다음을 실행합니다.
+버킷이 이미 있으면 위의 초기 설정 스택을 적용할 필요가 없습니다.
+
+```bash
+aws sso login --profile twodragon
+AWS_PROFILE=twodragon terraform -chdir=EC2/terraform init -reconfigure
+AWS_PROFILE=twodragon terraform -chdir=EC2/terraform plan
 ```
 
-> **주의:** `initial_setup` 단계에서 S3 버킷과 DynamoDB 테이블이 생성되었는지 확인하세요. 그렇지 않다면, 백엔드 초기화가 실패할 수 있습니다.
-
-### Terraform 초기화
-
-백엔드 설정을 적용하기 위해 `terraform/` 디렉토리에서 Terraform을 초기화합니다.
-
-1. **Terraform 디렉토리로 이동**:
-   ```bash
-   cd ../terraform
-   ```
-   
-2. **Terraform 초기화**:
-   ```bash
-   terraform init
-   ```
+이 구성에는 EC2, NAT Gateway, 인터페이스 VPC 엔드포인트 등 사용 요금이 발생할 수 있는
+리소스가 포함됩니다. Lambda 동작만 확인할 때는
+[수동 호출 Lambda 실습](terraform/labs/lambda-low-cost/)을 사용합니다.
 
 ---
 
@@ -468,7 +453,7 @@ resource "aws_internet_gateway" "myproject_prod_igw" {
 
 # Elastic IP for NAT Gateway
 resource "aws_eip" "myproject_prod_eip" {
-  vpc = true
+  domain = "vpc"
 }
 
 # NAT Gateway
