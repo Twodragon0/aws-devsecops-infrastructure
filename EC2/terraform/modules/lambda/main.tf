@@ -38,10 +38,12 @@ resource "aws_iam_role_policy_attachment" "lambda_cloudwatch_policy_attachment" 
 
 # Lambda 계층 생성
 resource "aws_lambda_layer_version" "lambda_layer" {
-  filename            = "${path.module}/lambda_layer.zip"
-  layer_name          = "aws_monitor_dependencies"
-  compatible_runtimes = ["python3.8"]
-  description         = "Dependencies for AWS Monitor Lambda"
+  filename                 = "${path.module}/lambda_layer.zip"
+  layer_name               = "aws_monitor_dependencies"
+  compatible_runtimes      = ["python3.12"]
+  compatible_architectures = ["x86_64"]
+  source_code_hash         = filebase64sha256("${path.module}/lambda_layer.zip")
+  description              = "Dependencies for AWS Monitor Lambda"
 }
 
 # Lambda 함수
@@ -51,7 +53,8 @@ resource "aws_lambda_function" "aws_monitor_lambda" {
   role             = aws_iam_role.lambda_role.arn
   handler          = "aws_monitor.lambda_handler"
   source_code_hash = filebase64sha256("${path.module}/aws_monitor.zip")
-  runtime          = "python3.8"
+  runtime          = "python3.12"
+  architectures    = ["x86_64"]
   layers           = [aws_lambda_layer_version.lambda_layer.arn]
 
   environment {
