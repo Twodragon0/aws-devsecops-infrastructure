@@ -28,7 +28,8 @@ python prowler_isms_2025.py
 
 **출력:**
 - `isms_risk_report_YYYYMMDD_HHMMSS.json`: 위험 평가 보고서
-- `prowler_scan_YYYYMMDD_HHMMSS.json`: Prowler 스캔 결과
+- `prowler_scan_YYYYMMDD_HHMMSS.ocsf.json`, `.csv`: Prowler 5.x 스캔 결과
+- `compliance/prowler_scan_YYYYMMDD_HHMMSS_kisa_isms_p_2023_korean_aws.csv`: ISMS-P 항목별 결과
 
 ### 2. 대시보드 생성
 
@@ -56,30 +57,40 @@ config = Config.from_env()
 
 assessor = ProwlerISMS2025(config)
 
-# EC2와 S3만 점검
+# EC2와 S3만 점검 (Prowler 5.x 에서 서비스 필터는 컴플라이언스 지정과 함께 쓸 수 없음)
 prowler_output = assessor.run_prowler_scan(
     output_format='json',
     services=['ec2', 's3']
 )
 ```
 
-### 2. 컴플라이언스 프레임워크 지정
+### 2. 컴플라이언스 프레임워크 지정 (ISMS-P, ISO 27001)
+
+`run_prowler_scan(compliance_framework=...)`은 Prowler 5.x `--compliance` 옵션으로 전달되며, `run_full_assessment()`의 기본값은 `kisa_isms_p_2023_korean_aws`입니다.
 
 ```python
-# AWS SSO 로그인 필요: aws sso login --profile twodragon
-
-# CIS 기준 점검
 prowler_output = assessor.run_prowler_scan(
-    output_format='json',
-    compliance_framework='cis'  # Prowler 공식 문서 참고: https://github.com/prowler-cloud/prowler
-)
-
-# NIST 기준 점검
-prowler_output = assessor.run_prowler_scan(
-    output_format='json',
-    compliance_framework='nist'
+    output_format='json',                       # json-ocsf + csv 저장
+    compliance_framework='iso27001_2022_aws'    # 또는 kisa_isms_p_2023_aws
 )
 ```
+
+CLI로 직접 실행할 수도 있습니다 (Prowler 5.52.0 기준).
+
+```bash
+# AWS SSO 로그인 필요: aws sso login --profile twodragon
+
+# 프레임워크 이름 확인
+prowler aws --list-compliance | grep -E "kisa|iso27001"
+
+# ISMS-P (한국어 항목명)
+prowler aws --profile twodragon --compliance kisa_isms_p_2023_korean_aws -o ./output
+
+# ISMS-P + ISO/IEC 27001:2022
+prowler aws --profile twodragon --compliance kisa_isms_p_2023_aws iso27001_2022_aws -o ./output
+```
+
+결과는 `./output/compliance/` 아래 프레임워크별 CSV로 저장됩니다.
 
 ### 3. 자산 중요도 수동 설정
 
@@ -119,6 +130,61 @@ print(f"Critical 위험 자산: {len(critical_assets)}개")
 for asset in critical_assets:
     print(f"  - {asset['asset_name']}: {asset['risk_score']}점")
 ```
+
+## 5주차: 멀티 계정 거버넌스 증적 수집
+
+### 1. 실행
+
+```bash
+aws sso login --profile twodragon
+
+# 관리 계정의 Control Tower 홈 리전에서 실행
+python governance_audit.py --profile twodragon --region ap-northeast-2 --output-dir ./output
+```
+
+콘솔 요약 예시 (형식만 표시, 실제 값은 환경에 따라 다름):
+
+```
+[PASS   ] GOV-ORG-03 2.9.4/2.10.1   CloudTrail 변조 차단 SCP (StopLogging/DeleteTrail/UpdateTrail/PutEventSelectors)
+[FAIL   ] GOV-CT-05  2.9.4/2.11.3   S3 데이터 이벤트(GetObject 등 읽기) 수집
+[UNKNOWN] GOV-CT-06  2.9.5/2.11.3   CloudWatch Logs 연동 (SIEM 수집 경로)
+```
+
+### 2. FAIL / UNKNOWN 항목만 추리기
+
+```python
+import json
+from pathlib import Path
+
+report_file = sorted(Path('output').glob('governance_evidence_*.json'))[-1]
+report = json.loads(report_file.read_text(encoding='utf-8'))
+
+for finding in report['findings']:
+    if finding['status'] != 'PASS':
+        print(finding['check_id'], finding['status'], finding['isms_p'], finding['detail'])
+
+# 권한 부족으로 건너뛴 API
+for error in report['errors']:
+    print('skipped:', error['api'], error['code'])
+```
+
+### 3. 변조 차단 SCP 예외 주체 확인
+
+`GOV-ORG-03`의 `evidence.exceptions`에는 Deny 문에서 제외된 주체(`ArnNotLike aws:PrincipalArn` 등)가 들어 있습니다. Control Tower 실행 역할(`AWSControlTowerExecution`)이나 브레이크글래스 역할 외의 예외가 있으면 심사 전에 사유를 문서화하세요.
+
+```python
+tamper = next(f for f in report['findings'] if f['check_id'] == 'GOV-ORG-03')
+for exc in tamper['evidence'].get('exceptions', []):
+    print(exc['policy'], exc['operator'], exc['key'], exc['values'])
+```
+
+### 4. 계정 ID를 가린 증적 공유
+
+```bash
+python governance_audit.py --mask-account-ids --output-dir ./share
+```
+
+12자리 계정 ID가 `********1234` 형태로 바뀝니다. 원본 출력은 `ISMS/.gitignore`에 의해 커밋되지 않지만, 공개 저장소나 수강생 채널에 올릴 때는 마스킹본을 쓰세요.
 
 ## CI/CD 통합
 
@@ -367,6 +433,7 @@ for batch in services_batches:
 ## 참고 자료
 
 - [Prowler 공식 문서](https://docs.prowler.com)
-- [ISMS-P 인증 가이드](https://isms.go.kr)
-- [AWS 보안 모범 사례](https://aws.amazon.com/security/best-practices/)
+- [ISMS-P 인증 제도 안내 (KISA)](https://www.kisa.or.kr/1050602)
+- [Prowler 컴플라이언스 문서](https://docs.prowler.com/user-guide/compliance/tutorials/compliance)
+- [AWS Well-Architected 보안 원칙](https://docs.aws.amazon.com/wellarchitected/latest/security-pillar/welcome.html)
 

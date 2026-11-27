@@ -1,5 +1,35 @@
 # 변경 이력
 
+## [9기 5주차 거버넌스 증적] - 2026-11-27
+
+### 추가
+- `isms-p-cloud-audit/governance_audit.py`: 멀티 계정 거버넌스 증적 수집기 (읽기 전용)
+  - Organizations 기능 세트, OU 트리, 대상별 SCP·RCP 연결
+  - CloudTrail 변조 차단 Deny(StopLogging/DeleteTrail/UpdateTrail/PutEventSelectors)와 `ArnNotLike` 등 예외 주체 추출
+  - 조직 추적, 다중 리전, 로깅 상태, 무결성 검증, KMS, 기본/고급 이벤트 선택기의 S3 데이터 이벤트(읽기) 범위
+  - 별도 계정 로그 버킷(중앙 로그 아카이브), CloudWatch Logs 연동, Control Tower 랜딩 존·드리프트
+  - ISMS-P 인증기준 항목(2.1.3, 2.5.5, 2.6.1, 2.9.4, 2.9.5, 2.10.1, 2.11.3) 매핑 PASS/FAIL/UNKNOWN 증적을 JSON + CSV로 출력, `--mask-account-ids` 지원
+  - 단독 계정(`AWSOrganizationsNotInUseException`), 멤버 계정, AccessDenied 를 중단 없이 UNKNOWN/FAIL로 기록
+- `isms-p-cloud-audit/tests/`: botocore Stubber 기반 단위 테스트, `pytest.ini`
+
+### 변경
+- `README.md`: ISMS-P 인증기준 현황(2023.10.5 고시 개정, 101개 항목, 2026.4.10 강화방안) 추가, Prowler 5.x 컴플라이언스 이름(`kisa_isms_p_2023_aws`, `kisa_isms_p_2023_korean_aws`, `iso27001_2022_aws`)과 CLI 예시, 5주차 거버넌스 증적 수집 절차·최소 권한 IAM 정책·ISMS-P 매핑표, 9기 4주차 포스트 링크
+- `isms-p-cloud-audit/README.md`, `USAGE_EXAMPLES.md`: `governance_audit.py` 사용법, Prowler 5.x 컴플라이언스 실행 방법, Python 요구 버전(3.10 이상 3.14 미만)
+- 접속되지 않는 링크(`isms.go.kr`, AWS 보안 모범 사례 404)를 KISA ISMS-P 안내, 국가법령정보센터 고시, AWS Well-Architected 보안 원칙으로 교체
+
+### 수정 (리뷰 반영)
+- `governance_audit.py` 거짓 PASS 방지
+  - 조건(`aws:RequestedRegion` 등)·Resource 제한·NotResource 가 있는 Deny 는 부분 적용(partial)으로만 기록
+  - 주체 예외는 좁은 `aws:PrincipalArn` 패턴만 허용 (다른 `aws:Principal*` 키, `ForAllValues:`/`ForAnyValue:`, `*`·`arn:aws:iam::*:role/*` 같은 넓은 예외는 partial), SUSPENDED·폐쇄 계정은 판정 분모에서 제외
+  - 변조 차단 범위를 Root → OU → 계정 상속으로 계정별 계산, 관리 계정 제외 모든 멤버 계정이 4개 액션을 상속해야 PASS, 미적용 OU·계정 목록 기록
+  - `GetTrailStatus` 실패 시 CT-02~05, LOG-01 을 UNKNOWN 처리, 고급 이벤트 선택기 연산자(readOnly NotEquals, eventName StartsWith/NotStartsWith, ARN EndsWith 등) 처리
+  - LOG-01 은 관리 계정에서만 판별 (ListBuckets 페이지네이션, GetBucketLocation + ExpectedBucketOwner), Control Tower 미발견 시 trusted access 로 FAIL/UNKNOWN 구분
+  - `--mask-account-ids` 가 이메일, 역할 세션 이름, 계정·OU 이름까지 마스킹
+  - IAM 와일드카드 매처, adaptive 재시도, boto3/botocore 1.35.60 이상, `requirements-dev.txt`
+- `prowler_isms_2025.py`: Prowler 5.x CLI(`-M csv json-ocsf`, `-o`, `-F`, `--compliance kisa_isms_p_2023_korean_aws`, `--ignore-exit-code-3`)로 호출하고 json-ocsf 결과 파싱, `prowler>=5.0.0`
+- `aws_info.py`: 들여쓰기가 깨져 실행되지 않던 문제 복구 (공백만 변경)
+- 테스트 16개 → 70개
+
 ## [개선 버전] - 2024-12
 
 ### 주요 개선 사항

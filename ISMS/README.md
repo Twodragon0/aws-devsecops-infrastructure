@@ -261,7 +261,7 @@ graph LR
 
 ### 사전 요구 사항
 
-1. **Python 3.9 이상**
+1. **Python 3.9 이상** (Prowler 5.x를 함께 쓰려면 Python 3.10 이상 3.14 미만)
 2. **AWS 자격 증명 설정**
    - AWS CLI 설정 (`aws configure`)
    - 또는 환경 변수 (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`)
@@ -427,6 +427,12 @@ ISMS/
 ├── ec2_eni.py          # EC2 ENI 정보 수집
 ├── eks_info.py         # EKS 정보 수집
 ├── ec2_s3_drive.py     # Google Drive 업로드
+├── isms-p-cloud-audit/ # Prowler 위험 평가, 거버넌스 증적, 실습(labs/)
+│   ├── prowler_isms_2025.py   # 자산 식별 + Prowler 위험 평가
+│   ├── risk_dashboard.py      # 위험 대시보드(HTML)
+│   ├── governance_audit.py    # 5주차 멀티 계정 거버넌스 증적 (읽기 전용)
+│   └── tests/                 # governance_audit 단위 테스트 (botocore Stubber)
+├── pytest.ini          # 테스트 경로 설정 (cd ISMS && python -m pytest)
 ├── requirements.txt    # 의존성 목록
 └── README.md           # 이 파일
 ```
@@ -543,6 +549,42 @@ export ISMS_LOG_LEVEL=DEBUG
 python aws_info.py
 ```
 
+## ISMS-P 인증기준 현황 (2026-11-27 확인)
+
+이 저장소의 "ISMS-P 2025"는 강의 회차 이름이며, KISA가 2025년에 새 인증기준을 낸 것은 아닙니다. 현재 심사에 쓰이는 기준은 다음과 같습니다.
+
+| 구분 | 내용 |
+|------|------|
+| 인증기준 | 「정보보호 및 개인정보보호 관리체계 인증 등에 관한 고시」 2023.10.5 개정 (개인정보보호위원회고시 제2023-8호) 별표 7 |
+| 항목 수 | 101개 = 관리체계 수립 및 운영 16 + 보호대책 요구사항 64 + 개인정보 처리단계별 요구사항 21 |
+| 안내서 | 세부점검항목 2023.10.31, 인증기준 안내서 2023.11.23 개정 |
+| 이후 변경 | 2024.7.24부터 중소기업 대상 ISMS·ISMS-P 인증 특례(간편인증) 시행 ([전자신문 2024-07-23](https://m.etnews.com/20240723000222)). 2026.4.10 정부 "인증 실효성 강화방안" 발표: 101개 표준 기준에 강화 인증기준 20개를 더하는 방향으로, 2027년 적용을 추진 중이라는 보도 단계입니다 (고시 개정 전, 항목·번호 미확정) |
+
+- 고시 원문: [국가법령정보센터](https://www.law.go.kr/행정규칙/정보보호및개인정보보호관리체계인증등에관한고시)
+- 인증 제도 안내: [KISA ISMS-P](https://www.kisa.or.kr/1050602)
+- 강화방안 보도: [뉴시스 2026-04-10](https://www.newsis.com/view/NISX20260409_0003584993) (정부 발표 보도이며, 확정된 고시 내용은 아님)
+
+### Prowler 컴플라이언스 프레임워크 (Prowler 5.52.0, 2026-11-23 PyPI 기준)
+
+| 프레임워크 | Prowler 이름 |
+|-----------|--------------|
+| ISMS-P (영문) | `kisa_isms_p_2023_aws` |
+| ISMS-P (한국어) | `kisa_isms_p_2023_korean_aws` |
+| ISO/IEC 27001:2022 | `iso27001_2022_aws` (구판: `iso27001_2013_aws`) |
+
+```bash
+# 사용 가능한 프레임워크 목록
+prowler aws --list-compliance
+
+# ISMS-P 기준 점검 (결과: output/compliance/ 아래 CSV)
+prowler aws --profile twodragon --compliance kisa_isms_p_2023_korean_aws
+
+# ISO 27001:2022 와 함께 점검
+prowler aws --profile twodragon --compliance kisa_isms_p_2023_aws iso27001_2022_aws
+```
+
+> `prowler_isms_2025.py`는 Prowler 5.x 옵션(`-M csv json-ocsf`, `-o`, `-F`, `--compliance kisa_isms_p_2023_korean_aws`, `--ignore-exit-code-3`)으로 Prowler를 호출하고 json-ocsf 결과를 파싱합니다. Prowler 5.x에서 `-f`는 리전 필터, `-c`는 체크 지정이므로 3.x 시절 옵션을 쓰지 않습니다. 프레임워크 상세: [Prowler Hub](https://hub.prowler.com/compliance/kisa_isms_p_2023_aws), [Compliance 문서](https://docs.prowler.com/user-guide/compliance/tutorials/compliance)
+
 ## ISMS-P 2025 Prowler 활용 방안
 
 ### Prowler를 활용한 자산 식별 및 위험 관리
@@ -597,6 +639,143 @@ python risk_dashboard.py isms_risk_report_20241201_120000.json
 - **Low (20-39점)**: 모니터링 필요
   - 최적화 권장 사항
 
+## 5주차 거버넌스 증적 수집 (Organizations, Control Tower, CloudTrail)
+
+클라우드 시큐리티 9기 5주차(멀티 계정 거버넌스) 실습용 수집기입니다. `isms-p-cloud-audit/governance_audit.py`는 **읽기 전용 API만** 호출해 아래 항목을 확인하고, ISMS-P 인증기준 번호를 붙인 PASS / FAIL / UNKNOWN 증적을 JSON과 CSV로 남깁니다.
+
+- **Organizations**: 기능 세트(ALL), OU 트리와 계정, 대상(Root/OU/계정)별 SCP·RCP 연결
+- **CloudTrail 변조 차단 SCP**: `cloudtrail:StopLogging`, `DeleteTrail`, `UpdateTrail`, `PutEventSelectors` Deny를 Root → OU → 계정 경로로 상속받는지 계정별로 계산합니다. 관리 계정을 뺀 모든 멤버 계정이 4개 액션을 모두 상속받아야 PASS이며, 빠진 OU·계정을 증적에 남깁니다. 리전 조건(`aws:RequestedRegion` 등)이 붙거나 Resource가 특정 추적으로 좁혀진 Deny는 부분 적용(partial)으로만 기록합니다. 예외는 `aws:PrincipalArn`에 대한 `ArnNotLike`/`ArnNotEquals`/`StringNotLike`/`StringNotEquals`로 특정 역할을 지정한 경우만 인정하고 목록으로 남깁니다. `aws:PrincipalOrgID`·`aws:PrincipalAccount` 같은 다른 키, `ForAllValues:`/`ForAnyValue:` 연산자, `*`나 `arn:aws:iam::*:role/*`처럼 너무 넓은 예외는 부분 적용입니다. SCP는 관리 계정에 적용되지 않으며, SUSPENDED·폐쇄 중 계정은 판정에서 제외하고 증적에 남깁니다.
+- **조직 추적**: 조직 추적 여부, 다중 리전, 로깅 상태(`GetTrailStatus`), 로그 파일 무결성 검증, SSE-KMS
+- **S3 데이터 이벤트**: 기본/고급 이벤트 선택기에서 GetObject 등 읽기 이벤트를 어떤 버킷에 대해 수집하는지
+- **중앙 로그 아카이브**: 관리 계정에서 실행할 때 추적 버킷이 관리 계정 소유가 아닌지 (`ListBuckets` 페이지네이션, 권한이 없으면 `GetBucketLocation` + `ExpectedBucketOwner`). 다른 계정에서 실행하면 UNKNOWN
+- **SIEM 수집 경로**: CloudWatch Logs 연동 여부 (S3 기반 SIEM은 수동 확인 → UNKNOWN)
+- **Control Tower**: 랜딩 존 상태·드리프트, 활성화된 컨트롤 수. 랜딩 존이 안 보이면 Organizations trusted access(`controltower.amazonaws.com`)로 "미사용(FAIL)"과 "다른 홈 리전(UNKNOWN)"을 구분
+
+### 실행
+
+```bash
+aws sso login --profile twodragon
+cd isms-p-cloud-audit
+
+# 관리 계정(또는 Organizations 위임 관리자 계정), Control Tower 홈 리전에서 실행
+python governance_audit.py --profile twodragon --region ap-northeast-2 --output-dir ./output
+
+# 수강생과 공유할 때는 계정 ID·이메일·역할 세션 이름·계정/OU 이름 마스킹
+python governance_audit.py --mask-account-ids --output-dir ./output
+```
+
+출력: `governance_evidence_YYYYMMDD_HHMMSS.json` (원본 응답 + 판정), `governance_evidence_YYYYMMDD_HHMMSS.csv` (항목별 판정, 수집 시각 포함). 두 파일 모두 `ISMS/.gitignore`(`*.json`, `*.csv`, `output/`)로 커밋에서 제외됩니다.
+
+- 단독 계정(`AWSOrganizationsNotInUseException`)은 조직 항목을 FAIL로 기록하고 CloudTrail 점검은 계속합니다.
+- 멤버 계정이나 권한이 부족한 경우 해당 항목만 UNKNOWN으로 남기고 `errors`에 API와 오류 코드를 기록합니다. `GetTrailStatus`가 실패해 로깅 여부를 확인하지 못하면 추적 관련 항목도 FAIL 대신 UNKNOWN입니다.
+- 정책 본문을 읽지 못한 SCP(`DescribePolicy` 실패)가 미적용 계정의 경로에 있으면 GOV-ORG-03은 UNKNOWN이며, 분석하지 못한 정책 이름을 남깁니다.
+- API 호출은 adaptive 재시도(최초 호출 포함 최대 10회)를 사용합니다.
+
+### 필요한 IAM 권한 (최소 권한, 읽기 전용)
+
+수집기가 호출하는 API와 정확히 같은 16개 액션입니다 (`sts:GetCallerIdentity`는 권한이 필요 없음). IAM 정책 린터 [parliament](https://github.com/duo-labs/parliament)로 액션 이름과 리소스 범위를 검증했습니다 (경고 0건). `DescribeOrganization`을 제외한 조직 구조·정책 조회(`ListRoots`, `ListPolicies` 등)는 관리 계정 또는 위임 관리자 계정에서만 결과를 돌려줍니다.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "OrganizationsList",
+      "Effect": "Allow",
+      "Action": [
+        "organizations:DescribeOrganization",
+        "organizations:ListRoots",
+        "organizations:ListOrganizationalUnitsForParent",
+        "organizations:ListAccountsForParent",
+        "organizations:ListPolicies",
+        "organizations:ListAWSServiceAccessForOrganization"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "OrganizationsPolicyRead",
+      "Effect": "Allow",
+      "Action": [
+        "organizations:DescribePolicy",
+        "organizations:ListTargetsForPolicy"
+      ],
+      "Resource": "arn:aws:organizations::*:policy/*"
+    },
+    {
+      "Sid": "CloudTrailList",
+      "Effect": "Allow",
+      "Action": "cloudtrail:DescribeTrails",
+      "Resource": "*"
+    },
+    {
+      "Sid": "CloudTrailTrailRead",
+      "Effect": "Allow",
+      "Action": [
+        "cloudtrail:GetTrailStatus",
+        "cloudtrail:GetEventSelectors"
+      ],
+      "Resource": "arn:aws:cloudtrail:*:*:trail/*"
+    },
+    {
+      "Sid": "ControlTowerList",
+      "Effect": "Allow",
+      "Action": [
+        "controltower:ListLandingZones",
+        "controltower:ListEnabledControls"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ControlTowerLandingZoneRead",
+      "Effect": "Allow",
+      "Action": "controltower:GetLandingZone",
+      "Resource": "arn:aws:controltower:*:*:landingzone/*"
+    },
+    {
+      "Sid": "LogArchiveOwnershipCheck",
+      "Effect": "Allow",
+      "Action": "s3:ListAllMyBuckets",
+      "Resource": "*"
+    },
+    {
+      "Sid": "LogArchiveOwnerFallback",
+      "Effect": "Allow",
+      "Action": "s3:GetBucketLocation",
+      "Resource": "arn:aws:s3:::*"
+    }
+  ]
+}
+```
+
+### 점검 항목과 ISMS-P 매핑
+
+항목 번호·명칭은 2023.10.5 고시 개정 인증기준을 따릅니다 (Prowler `kisa_isms_p_2023_korean_aws` 매핑 파일로 교차 확인). 매핑은 증적 정리용 참고 자료이며 심사 판정을 대신하지 않습니다.
+
+| 점검 ID | 내용 | ISMS-P 인증기준 |
+|---------|------|-----------------|
+| GOV-ORG-01 | Organizations 모든 기능(ALL) 활성화 | 2.1.3 정보자산 관리, 2.5.5 특수 계정 및 권한 관리 |
+| GOV-ORG-02 | 사용자 정의 SCP 연결 | 2.5.5 특수 계정 및 권한 관리 |
+| GOV-ORG-03 | CloudTrail 변조 차단 SCP를 모든 멤버 계정이 상속 (조건·리소스 제한은 partial, 주체 예외 기록) | 2.9.4 로그 및 접속기록 관리, 2.10.1 보안시스템 운영 |
+| GOV-ORG-04 | 사용자 정의 RCP 연결 | 2.5.5 특수 계정 및 권한 관리, 2.6.1 네트워크 접근 |
+| GOV-CT-01 | 조직 추적 로깅 | 2.9.4 로그 및 접속기록 관리, 2.11.3 이상행위 분석 및 모니터링 |
+| GOV-CT-02 | 다중 리전 추적 | 2.9.4 |
+| GOV-CT-03 | 로그 파일 무결성 검증 | 2.9.4 |
+| GOV-CT-04 | SSE-KMS 암호화 | 2.9.4, 2.10.1 |
+| GOV-CT-05 | S3 데이터 이벤트(읽기) 수집 | 2.9.4, 2.11.3 |
+| GOV-CT-06 | CloudWatch Logs 연동 (SIEM 수집 경로) | 2.9.5 로그 및 접속기록 점검, 2.11.3 |
+| GOV-LOG-01 | 별도 계정 중앙 로그 아카이브 (관리 계정에서 실행 시 판별) | 2.9.4 |
+| GOV-CTW-01 | Control Tower 랜딩 존 ACTIVE + 드리프트 없음 | 2.10.1 보안시스템 운영 |
+
+참고 문서: [RCP](https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_rcps.html), [SCP](https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_scps.html), [조직 추적](https://docs.aws.amazon.com/awscloudtrail/latest/userguide/creating-trail-organization.html), [데이터 이벤트](https://docs.aws.amazon.com/awscloudtrail/latest/userguide/logging-data-events-with-cloudtrail.html), [Control Tower](https://docs.aws.amazon.com/controltower/latest/userguide/what-is-control-tower.html)
+
+### 테스트
+
+```bash
+cd ISMS
+pip install -r requirements-dev.txt
+python -m pytest        # 실제 AWS 호출 없이 botocore Stubber로 실행
+```
+
 ## 자동화
 
 ### Cron 작업 설정
@@ -630,6 +809,8 @@ python risk_dashboard.py isms_risk_report_20241201_120000.json
 
 이 프로젝트와 관련된 블로그 포스트를 참고하세요:
 
+- 클라우드 시큐리티 9기 5주차 (게시 예정)
+- [클라우드 시큐리티 9기 4주차: 자산 목록에서 ISMS-P 증적까지, 점검 결과를 개선 과제로 닫기](https://twodragon.tistory.com/715)
 - [클라우드 시큐리티 8기 4주차: 통합 보안 취약점 점검 및 ISMS-P 인증 대응 실무](https://twodragon.tistory.com/705)
 - [클라우드 시큐리티 8기 3주차: AWS FinOps 아키텍처부터 ISMS-P 보안 감사까지 완벽 공략!](https://twodragon.tistory.com/703)
 - [클라우드 보안 과정 7기 - 4주차 AWS 취약점 점검 및 ISMS 대응 가이드](https://twodragon.tistory.com/682)

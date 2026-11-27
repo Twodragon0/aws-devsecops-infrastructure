@@ -59,6 +59,9 @@ aws-credentials
 # ============================================
 # Security Scan Reports
 # ============================================
+# ISMS 거버넌스 증적 (계정 ID·조직 구조 포함, 커밋 금지)
+governance_evidence_*
+ISMS/isms-p-cloud-audit/output/
 *-audit-report.json
 npm-audit-report.json
 pip-audit-report.json
