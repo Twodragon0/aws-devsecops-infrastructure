@@ -46,7 +46,8 @@ python prowler_isms_2025.py
 
 **출력:**
 - `isms_risk_report_YYYYMMDD_HHMMSS.json`: 위험 평가 보고서 (JSON)
-- `prowler_scan_YYYYMMDD_HHMMSS.json`: Prowler 스캔 결과
+- `prowler_scan_YYYYMMDD_HHMMSS.ocsf.json`, `.csv`: Prowler 5.x 스캔 결과 (json-ocsf, CSV)
+- `compliance/prowler_scan_YYYYMMDD_HHMMSS_kisa_isms_p_2023_korean_aws.csv`: ISMS-P 항목별 결과 (기본 컴플라이언스)
 
 ### 2. `risk_dashboard.py` - 위험 관리 대시보드 생성
 
@@ -252,9 +253,10 @@ assets = assessor.identify_assets()
 
 ```python
 # Prowler 스캔 실행
+# Prowler 5.x: -M csv json-ocsf -o <output_dir> -F <이름> --compliance <프레임워크>
 prowler_output = assessor.run_prowler_scan(
     output_format='json',
-    compliance_framework='cis'
+    compliance_framework='kisa_isms_p_2023_korean_aws'  # 또는 iso27001_2022_aws
 )
 
 # 결과 파싱

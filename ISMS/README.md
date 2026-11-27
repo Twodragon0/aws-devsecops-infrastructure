@@ -583,7 +583,7 @@ prowler aws --profile twodragon --compliance kisa_isms_p_2023_korean_aws
 prowler aws --profile twodragon --compliance kisa_isms_p_2023_aws iso27001_2022_aws
 ```
 
-> `prowler_isms_2025.py`의 내부 Prowler 호출(`-M json`, `-f <파일>`, `-c <프레임워크>`)은 Prowler 3.x 옵션입니다. Prowler 5.x에서 `-f`는 리전 필터, `-c`는 체크 지정이므로, 컴플라이언스 점검은 위 CLI를 직접 실행하세요. 프레임워크 상세: [Prowler Hub](https://hub.prowler.com/compliance/kisa_isms_p_2023_aws), [Compliance 문서](https://docs.prowler.com/user-guide/compliance/tutorials/compliance)
+> `prowler_isms_2025.py`는 Prowler 5.x 옵션(`-M csv json-ocsf`, `-o`, `-F`, `--compliance kisa_isms_p_2023_korean_aws`, `--ignore-exit-code-3`)으로 Prowler를 호출하고 json-ocsf 결과를 파싱합니다. Prowler 5.x에서 `-f`는 리전 필터, `-c`는 체크 지정이므로 3.x 시절 옵션을 쓰지 않습니다. 프레임워크 상세: [Prowler Hub](https://hub.prowler.com/compliance/kisa_isms_p_2023_aws), [Compliance 문서](https://docs.prowler.com/user-guide/compliance/tutorials/compliance)
 
 ## ISMS-P 2025 Prowler 활용 방안
 

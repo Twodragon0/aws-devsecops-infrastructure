@@ -38,6 +38,15 @@ from botocore.exceptions import ClientError
 # 로거 설정
 logger = setup_logger('isms.prowler_isms_2025')
 
+# Prowler 5.x 기본 ISMS-P 컴플라이언스 프레임워크 (prowler aws --list-compliance 로 확인)
+ISMS_P_COMPLIANCE = 'kisa_isms_p_2023_korean_aws'
+
+# 기존 output_format 인자 → Prowler 5.x -M 값, 결과 파일 확장자
+PROWLER_OUTPUT_FORMATS = {'json': 'json-ocsf', 'json-ocsf': 'json-ocsf', 'csv': 'csv',
+                          'html': 'html', 'json-asff': 'json-asff'}
+PROWLER_FILE_SUFFIXES = {'json-ocsf': '.ocsf.json', 'csv': '.csv', 'html': '.html',
+                         'json-asff': '.asff.json'}
+
 
 class RiskLevel(Enum):
     """위험 등급"""
@@ -156,25 +165,31 @@ class ProwlerISMS2025:
         services: Optional[List[str]] = None
     ) -> Path:
         """
-        Prowler 스캔 실행
-        
+        Prowler 5.x 스캔 실행
+
         Args:
-            output_format: 출력 형식 (json, csv, html)
-            compliance_framework: 컴플라이언스 프레임워크 (cis, nist, pci-dss 등)
-            services: 점검할 서비스 목록 (None이면 전체)
-        
+            output_format: 출력 형식 (json → json-ocsf, csv, html, json-asff). CSV 는 항상 함께 저장
+            compliance_framework: Prowler 컴플라이언스 이름 (예: kisa_isms_p_2023_korean_aws,
+                iso27001_2022_aws). 결과 CSV 는 output_dir/compliance/ 에 저장
+            services: 점검할 서비스 목록 (None이면 전체, compliance_framework 와 동시 사용 불가)
+
         Returns:
-            출력 파일 경로
+            출력 파일 경로 (output_format 형식)
         """
         if not self.check_prowler_installed():
             raise AssetCollectionError("Prowler가 설치되지 않았습니다")
-        
+
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_file = self.output_dir / f"prowler_scan_{timestamp}.{output_format}"
-        
-        # Prowler 명령어 구성
-        # AWS profile 사용 (기본값: twodragon)
-        cmd = ['prowler', 'aws', '-M', output_format, '-f', str(output_file)]
+        output_name = f"prowler_scan_{timestamp}"
+        prowler_format = PROWLER_OUTPUT_FORMATS.get(output_format, output_format)
+        suffix = PROWLER_FILE_SUFFIXES.get(prowler_format, '.' + prowler_format)
+        output_file = self.output_dir / f"{output_name}{suffix}"
+        formats = ['csv'] if prowler_format == 'csv' else ['csv', prowler_format]
+
+        # Prowler 5.x 명령어 구성 (-M 출력 형식, -o 출력 디렉토리, -F 파일 이름)
+        # 실패 항목이 있어도 종료 코드 3 대신 0 을 받도록 --ignore-exit-code-3 사용
+        cmd = ['prowler', 'aws', '-M', *formats, '-o', str(self.output_dir), '-F', output_name,
+               '--ignore-exit-code-3']
         
         # AWS profile 지정
         if self.config.aws_profile:
@@ -185,13 +200,14 @@ class ProwlerISMS2025:
         if self.config.aws_region:
             cmd.extend(['--region', self.config.aws_region])
         
-        # 컴플라이언스 프레임워크 지정
+        # 컴플라이언스 프레임워크 지정 (Prowler 5.x: --compliance, -c 는 체크 지정)
         if compliance_framework:
-            cmd.extend(['-c', compliance_framework])
-        
-        # 서비스 필터
-        if services:
-            cmd.extend(['-s', ','.join(services)])
+            cmd.extend(['--compliance', compliance_framework])
+            if services:
+                logger.warning("Prowler 5.x 에서 --compliance 와 -s 는 함께 쓸 수 없어 서비스 필터를 무시합니다")
+        elif services:
+            # 서비스 필터 (공백으로 구분된 여러 값)
+            cmd.extend(['-s', *services])
         
         # ISMS-P 2025 관련 추가 옵션
         # 클라우드 환경 보안 강화 점검
@@ -262,6 +278,10 @@ class ProwlerISMS2025:
         """개별 발견 사항 파싱"""
         try:
             # Prowler 출력 형식에 맞춰 필드 매핑
+            # Prowler 5.x json-ocsf 형식은 metadata/finding_info/resources 에 값이 있음
+            if 'status_code' in item:
+                return self._parse_ocsf_finding(item)
+
             check_id = item.get('CheckID', item.get('check_id', ''))
             status = item.get('Status', item.get('status', 'UNKNOWN'))
             severity = item.get('Severity', item.get('severity', 'unknown'))
@@ -290,6 +310,27 @@ class ProwlerISMS2025:
             logger.warning(f"발견 사항 파싱 실패: {e}")
             return None
     
+    def _parse_ocsf_finding(self, item: Dict[str, Any]) -> SecurityFinding:
+        """Prowler 5.x json-ocsf 발견 사항 파싱"""
+        resource = (item.get('resources') or [{}])[0]
+        remediation = item.get('remediation') or {}
+        status = item.get('status_code', 'UNKNOWN')
+        severity = item.get('severity', 'unknown')
+        return SecurityFinding(
+            check_id=(item.get('metadata') or {}).get('event_code', ''),
+            check_title=(item.get('finding_info') or {}).get('title', ''),
+            status=status,
+            risk_level=self._determine_risk_level(status, severity),
+            severity=severity,
+            service=(resource.get('group') or {}).get('name', ''),
+            region=resource.get('region', ''),
+            resource_id=resource.get('uid', ''),
+            description=item.get('message', ''),
+            remediation=remediation.get('desc', '') if isinstance(remediation, dict) else str(remediation),
+            compliance_frameworks=(item.get('unmapped') or {}).get('compliance', []),
+            detected_at=datetime.now().isoformat()
+        )
+
     def _determine_risk_level(self, status: str, severity: str) -> RiskLevel:
         """위험 등급 결정"""
         # FAIL 상태이고 심각도가 높은 경우
@@ -670,7 +711,7 @@ class ProwlerISMS2025:
             
             # 2. Prowler 보안 점검
             logger.info("2단계: Prowler 보안 점검")
-            prowler_output = self.run_prowler_scan(output_format='json')
+            prowler_output = self.run_prowler_scan(output_format='json', compliance_framework=ISMS_P_COMPLIANCE)
             
             # 3. 결과 파싱
             logger.info("3단계: 결과 파싱")

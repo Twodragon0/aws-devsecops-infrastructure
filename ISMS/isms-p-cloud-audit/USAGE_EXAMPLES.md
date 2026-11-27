@@ -28,7 +28,8 @@ python prowler_isms_2025.py
 
 **출력:**
 - `isms_risk_report_YYYYMMDD_HHMMSS.json`: 위험 평가 보고서
-- `prowler_scan_YYYYMMDD_HHMMSS.json`: Prowler 스캔 결과
+- `prowler_scan_YYYYMMDD_HHMMSS.ocsf.json`, `.csv`: Prowler 5.x 스캔 결과
+- `compliance/prowler_scan_YYYYMMDD_HHMMSS_kisa_isms_p_2023_korean_aws.csv`: ISMS-P 항목별 결과
 
 ### 2. 대시보드 생성
 
@@ -56,7 +57,7 @@ config = Config.from_env()
 
 assessor = ProwlerISMS2025(config)
 
-# EC2와 S3만 점검
+# EC2와 S3만 점검 (Prowler 5.x 에서 서비스 필터는 컴플라이언스 지정과 함께 쓸 수 없음)
 prowler_output = assessor.run_prowler_scan(
     output_format='json',
     services=['ec2', 's3']
@@ -65,7 +66,16 @@ prowler_output = assessor.run_prowler_scan(
 
 ### 2. 컴플라이언스 프레임워크 지정 (ISMS-P, ISO 27001)
 
-`run_prowler_scan()`의 `compliance_framework` 인자는 Prowler 3.x 옵션(`-c`)으로 전달됩니다. Prowler 5.x에서는 `-c`가 체크 지정이므로, 컴플라이언스 점검은 CLI를 직접 실행하세요 (Prowler 5.52.0 기준).
+`run_prowler_scan(compliance_framework=...)`은 Prowler 5.x `--compliance` 옵션으로 전달되며, `run_full_assessment()`의 기본값은 `kisa_isms_p_2023_korean_aws`입니다.
+
+```python
+prowler_output = assessor.run_prowler_scan(
+    output_format='json',                       # json-ocsf + csv 저장
+    compliance_framework='iso27001_2022_aws'    # 또는 kisa_isms_p_2023_aws
+)
+```
+
+CLI로 직접 실행할 수도 있습니다 (Prowler 5.52.0 기준).
 
 ```bash
 # AWS SSO 로그인 필요: aws sso login --profile twodragon

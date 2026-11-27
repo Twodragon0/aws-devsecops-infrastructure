@@ -62,7 +62,7 @@ class AWSAssetCollector:
         """
         logger.info("EC2 인스턴스 정보 수집 중...")
         ec2_client = self.clients.get_client('ec2')
-ec2_data = []
+        ec2_data = []
 
         try:
             response = ec2_client.describe_instances()
@@ -77,11 +77,11 @@ ec2_data = []
                     # 인스턴스 정보 추출
                     instance_id = instance.get('InstanceId', 'N/A')
                     spec = instance.get('InstanceType', 'N/A')
-        os = instance.get('Platform', 'Linux/UNIX')
-        version = instance.get('ImageId', 'N/A')
+                    os = instance.get('Platform', 'Linux/UNIX')
+                    version = instance.get('ImageId', 'N/A')
                     availability_zone = instance.get('Placement', {}).get('AvailabilityZone', 'N/A')
-        public_ip = instance.get('PublicIpAddress', 'N/A')
-        private_ip = instance.get('PrivateIpAddress', 'N/A')
+                    public_ip = instance.get('PublicIpAddress', 'N/A')
+                    private_ip = instance.get('PrivateIpAddress', 'N/A')
                     status = instance.get('State', {}).get('Name', 'N/A')
                     
                     ec2_data.append([
@@ -133,66 +133,66 @@ ec2_data = []
             raise AssetCollectionError(f"S3 버킷 수집 실패: {e}")
     
     def _get_bucket_acl(self, client, bucket: str) -> str:
-    """버킷 ACL 정보 조회"""
-    try:
-        response = client.get_bucket_acl(Bucket=bucket)
-        acl_info = []
+        """버킷 ACL 정보 조회"""
+        try:
+            response = client.get_bucket_acl(Bucket=bucket)
+            acl_info = []
             for grant in response.get('Grants', []):
                 grantee = grant.get('Grantee', {})
                 permission = grant.get('Permission', '')
                 grantee_type = grantee.get('Type', 'Unknown')
                 acl_info.append(f"{grantee_type}: {permission}")
             return ', '.join(acl_info) if acl_info else 'N/A'
-    except ClientError as e:
+        except ClientError as e:
             return f"Error: {e.response.get('Error', {}).get('Code', 'Unknown')}"
 
     def _get_bucket_encryption(self, client, bucket: str) -> str:
-    """버킷 암호화 정보 조회"""
-    try:
-        response = client.get_bucket_encryption(Bucket=bucket)
+        """버킷 암호화 정보 조회"""
+        try:
+            response = client.get_bucket_encryption(Bucket=bucket)
             encryption_rules = response.get('ServerSideEncryptionConfiguration', {}).get('Rules', [])
             return json.dumps(encryption_rules, indent=2) if encryption_rules else 'N/A'
-    except ClientError as e:
+        except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code', '')
             if error_code == 'ServerSideEncryptionConfigurationNotFoundError':
                 return 'Not configured'
             return f"Error: {error_code}"
 
     def _get_bucket_logging(self, client, bucket: str) -> str:
-    """버킷 로깅 설정 정보 조회"""
-    try:
-        response = client.get_bucket_logging(Bucket=bucket)
-        logging_info = response.get('LoggingEnabled', {})
-        if logging_info:
-            return f"TargetBucket: {logging_info.get('TargetBucket')}, TargetPrefix: {logging_info.get('TargetPrefix')}"
+        """버킷 로깅 설정 정보 조회"""
+        try:
+            response = client.get_bucket_logging(Bucket=bucket)
+            logging_info = response.get('LoggingEnabled', {})
+            if logging_info:
+                return f"TargetBucket: {logging_info.get('TargetBucket')}, TargetPrefix: {logging_info.get('TargetPrefix')}"
             return "Not enabled"
-    except ClientError as e:
+        except ClientError as e:
             return f"Error: {e.response.get('Error', {}).get('Code', 'Unknown')}"
 
     def _get_bucket_policy(self, client, bucket: str) -> str:
-    """버킷 정책 조회"""
-    try:
-        response = client.get_bucket_policy(Bucket=bucket)
+        """버킷 정책 조회"""
+        try:
+            response = client.get_bucket_policy(Bucket=bucket)
             policy = json.loads(response.get('Policy', '{}'))
             return json.dumps(policy, indent=2)
-    except ClientError as e:
+        except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code', '')
             if error_code == 'NoSuchBucketPolicy':
                 return 'No policy'
             return f"Error: {error_code}"
 
     def _get_public_access_block(self, client, bucket: str) -> str:
-    """버킷 퍼블릭 액세스 차단 정보 조회"""
-    try:
-        response = client.get_public_access_block(Bucket=bucket)
+        """버킷 퍼블릭 액세스 차단 정보 조회"""
+        try:
+            response = client.get_public_access_block(Bucket=bucket)
             block_config = response.get('PublicAccessBlockConfiguration', {})
-        return json.dumps(block_config, indent=2)
-    except ClientError as e:
+            return json.dumps(block_config, indent=2)
+        except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code', '')
             if error_code == 'NoSuchPublicAccessBlockConfiguration':
                 return 'Not configured'
             return f"Error: {error_code}"
-    
+
     def collect_ecr_repositories(self) -> List[List[Any]]:
         """
         ECR 리포지토리 정보 수집
@@ -202,7 +202,7 @@ ec2_data = []
         """
         logger.info("ECR 리포지토리 정보 수집 중...")
         ecr_client = self.clients.get_client('ecr', region=self.config.aws_region)
-    ecr_data = []
+        ecr_data = []
         
         try:
             paginator = ecr_client.get_paginator('describe_repositories')
@@ -214,14 +214,14 @@ ec2_data = []
                     created_at = repo.get('createdAt', datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
                     image_scanning = repo.get('imageScanningConfiguration', {}).get('scanOnPush', False)
                     image_tag_mutability = repo.get('imageTagMutability', 'MUTABLE')
-        
-        ecr_data.append([
+
+                    ecr_data.append([
                         repository_name, repository_uri, created_at,
                         image_scanning, image_tag_mutability, 'N/A'  # lifecycle_policy는 별도 조회 필요
                     ])
             
             logger.info(f"ECR 리포지토리 {len(ecr_data)}개 수집 완료")
-    return ecr_data
+            return ecr_data
 
         except ClientError as e:
             logger.error(f"ECR 리포지토리 수집 실패: {e}")
@@ -241,8 +241,8 @@ ec2_data = []
         try:
             # 모든 역할 목록 가져오기
             paginator = iam_client.get_paginator('list_roles')
-            
-        for page in paginator.paginate():
+
+            for page in paginator.paginate():
                 for role in page.get('Roles', []):
                     role_name = role.get('RoleName', 'N/A')
                     
@@ -318,26 +318,26 @@ ec2_data = []
                 zone_name = zone['Name']
                 
                 # 레코드 세트 조회
-    paginator = route53_client.get_paginator('list_resource_record_sets')
+                paginator = route53_client.get_paginator('list_resource_record_sets')
                 
                 for page in paginator.paginate(HostedZoneId=zone_id):
                     for record in page.get('ResourceRecordSets', []):
                         record_values = [r.get('Value', '') for r in record.get('ResourceRecords', [])]
-            alias_target = record.get('AliasTarget', {})
+                        alias_target = record.get('AliasTarget', {})
                         
                         route53_data.append({
                             'HostedZoneId': zone_id,
                             'HostedZoneName': zone_name,
                             'Name': record.get('Name', 'N/A'),
                             'Type': record.get('Type', 'N/A'),
-                'TTL': record.get('TTL', 'N/A'),
-                'Values': ', '.join(record_values) if record_values else 'N/A',
-                'AliasDNSName': alias_target.get('DNSName', 'N/A'),
-                'AliasHostedZoneId': alias_target.get('HostedZoneId', 'N/A')
+                            'TTL': record.get('TTL', 'N/A'),
+                            'Values': ', '.join(record_values) if record_values else 'N/A',
+                            'AliasDNSName': alias_target.get('DNSName', 'N/A'),
+                            'AliasHostedZoneId': alias_target.get('HostedZoneId', 'N/A')
                         })
             
             logger.info(f"Route 53 레코드 {len(route53_data)}개 수집 완료")
-    return route53_data
+            return route53_data
 
         except ClientError as e:
             logger.error(f"Route 53 레코드 수집 실패: {e}")
@@ -390,8 +390,8 @@ ec2_data = []
         try:
             response = cloudfront_client.list_distributions()
             distributions = response.get('DistributionList', {}).get('Items', [])
-            
-    for dist in distributions:
+
+            for dist in distributions:
                 origins = dist.get('Origins', {}).get('Items', [])
                 origin_domain = origins[0].get('DomainName', 'N/A') if origins else 'N/A'
                 
