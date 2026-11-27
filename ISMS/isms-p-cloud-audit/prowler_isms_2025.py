@@ -19,10 +19,13 @@ ISMS-P 2025 가이드 기반 Prowler 자산 식별 및 위험 관리 시스템
 import sys
 import json
 import os
+import shlex
+import argparse
 import subprocess
+from collections import Counter
 from pathlib import Path
-from datetime import datetime, timedelta
-from typing import Dict, List, Any, Optional
+from datetime import datetime
+from typing import Dict, List, Any, Optional, Sequence, Tuple
 from dataclasses import dataclass, asdict
 from enum import Enum
 
@@ -47,6 +50,9 @@ PROWLER_OUTPUT_FORMATS = {'json': 'json-ocsf', 'json-ocsf': 'json-ocsf', 'csv': 
 PROWLER_FILE_SUFFIXES = {'json-ocsf': '.ocsf.json', 'csv': '.csv', 'html': '.html',
                          'json-asff': '.asff.json'}
 
+# 기본 출력 디렉토리: 스크립트 옆 output/ (.gitignore 대상, 현재 작업 디렉토리에 결과를 남기지 않음)
+DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / 'output'
+
 
 class RiskLevel(Enum):
     """위험 등급"""
@@ -55,6 +61,10 @@ class RiskLevel(Enum):
     MEDIUM = "Medium"  # 계획적 조치 필요
     LOW = "Low"  # 모니터링 필요
     INFO = "Info"  # 정보성
+
+
+# 낮음 → 높음 순서 (자산 위험 등급 비교용)
+RISK_LEVEL_ORDER = [RiskLevel.INFO, RiskLevel.LOW, RiskLevel.MEDIUM, RiskLevel.HIGH, RiskLevel.CRITICAL]
 
 
 class AssetImportance(Enum):
@@ -82,6 +92,8 @@ class SecurityFinding:
     asset_importance: Optional[AssetImportance] = None
     detected_at: Optional[str] = None
     remediated_at: Optional[str] = None
+    resource_name: str = ''
+    resource_type: str = ''
 
 
 @dataclass
@@ -179,6 +191,36 @@ class ProwlerISMS2025:
         if not self.check_prowler_installed():
             raise AssetCollectionError("Prowler가 설치되지 않았습니다")
 
+        cmd, output_file = self.build_prowler_command(output_format, compliance_framework, services)
+        logger.info(f"Prowler 스캔 시작: {' '.join(cmd)}")
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=3600,  # 1시간 타임아웃
+                env={**os.environ, 'AWS_PROFILE': self.config.aws_profile} if self.config.aws_profile else os.environ
+            )
+
+            if result.returncode == 0:
+                logger.info(f"Prowler 스캔 완료: {output_file}")
+                return output_file
+            else:
+                logger.error(f"Prowler 스캔 실패: {result.stderr}")
+                raise AssetCollectionError(f"Prowler 스캔 실패: {result.stderr}")
+
+        except subprocess.TimeoutExpired:
+            logger.error("Prowler 스캔 타임아웃")
+            raise AssetCollectionError("Prowler 스캔이 시간 초과되었습니다")
+
+    def build_prowler_command(
+        self,
+        output_format: str = 'json',
+        compliance_framework: Optional[str] = None,
+        services: Optional[List[str]] = None
+    ) -> Tuple[List[str], Path]:
+        """Prowler 5.x 명령어와 예상 출력 파일 경로 구성 (실행하지 않음, --dry-run 에서도 사용)"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_name = f"prowler_scan_{timestamp}"
         prowler_format = PROWLER_OUTPUT_FORMATS.get(output_format, output_format)
@@ -212,29 +254,8 @@ class ProwlerISMS2025:
         # ISMS-P 2025 관련 추가 옵션
         # 클라우드 환경 보안 강화 점검
         cmd.extend(['--verbose', '--log-level', 'INFO'])
-        
-        logger.info(f"Prowler 스캔 시작: {' '.join(cmd)}")
-        
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=3600,  # 1시간 타임아웃
-                env={**os.environ, 'AWS_PROFILE': self.config.aws_profile} if self.config.aws_profile else os.environ
-            )
-            
-            if result.returncode == 0:
-                logger.info(f"Prowler 스캔 완료: {output_file}")
-                return output_file
-            else:
-                logger.error(f"Prowler 스캔 실패: {result.stderr}")
-                raise AssetCollectionError(f"Prowler 스캔 실패: {result.stderr}")
-        
-        except subprocess.TimeoutExpired:
-            logger.error("Prowler 스캔 타임아웃")
-            raise AssetCollectionError("Prowler 스캔이 시간 초과되었습니다")
-    
+        return cmd, output_file
+
     def parse_prowler_results(self, json_file: Path) -> List[SecurityFinding]:
         """
         Prowler JSON 결과 파싱
@@ -325,6 +346,8 @@ class ProwlerISMS2025:
             service=(resource.get('group') or {}).get('name', ''),
             region=resource.get('region', ''),
             resource_id=resource.get('uid', ''),
+            resource_name=resource.get('name', ''),
+            resource_type=resource.get('type', ''),
             description=item.get('message', ''),
             remediation=remediation.get('desc', '') if isinstance(remediation, dict) else str(remediation),
             compliance_frameworks=(item.get('unmapped') or {}).get('compliance', []),
@@ -332,18 +355,15 @@ class ProwlerISMS2025:
         )
 
     def _determine_risk_level(self, status: str, severity: str) -> RiskLevel:
-        """위험 등급 결정"""
-        # FAIL 상태이고 심각도가 높은 경우
+        """위험 등급 결정 (FAIL 은 Prowler 심각도를 그대로 사용, PASS·MANUAL 은 Info)"""
         if status == 'FAIL':
-            severity_lower = severity.lower()
-            if severity_lower in ['critical', 'high']:
-                return RiskLevel.CRITICAL
-            elif severity_lower == 'medium':
-                return RiskLevel.HIGH
-            elif severity_lower == 'low':
-                return RiskLevel.MEDIUM
-            else:
-                return RiskLevel.LOW
+            severity_map = {
+                'critical': RiskLevel.CRITICAL,
+                'high': RiskLevel.HIGH,
+                'medium': RiskLevel.MEDIUM,
+                'low': RiskLevel.LOW
+            }
+            return severity_map.get(severity.lower(), RiskLevel.LOW)
         elif status == 'WARNING':
             return RiskLevel.MEDIUM
         else:
@@ -499,6 +519,37 @@ class ProwlerISMS2025:
         else:
             return 3
     
+    def assets_from_findings(
+        self,
+        findings: List[SecurityFinding],
+        known_assets: Sequence[Asset] = ()
+    ) -> List[Asset]:
+        """
+        Prowler 발견 사항의 리소스(OCSF resources[].uid)로 자산 도출
+
+        identify_assets() 인벤토리는 EC2·S3·RDS 만 다루고 ID 가 ARN 이 아니므로(예: 버킷 이름),
+        인벤토리와 ID·이름이 일치하지 않는 리소스만 새 자산으로 추가합니다.
+        """
+        known = {asset.asset_id for asset in known_assets}
+        derived: Dict[str, Asset] = {}
+        for finding in findings:
+            resource_id = finding.resource_id
+            name_known = bool(finding.resource_name) and finding.resource_name in known
+            if not resource_id or resource_id in known or resource_id in derived or name_known:
+                continue
+            derived[resource_id] = Asset(
+                asset_id=resource_id,
+                asset_type=finding.resource_type or finding.service,
+                asset_name=finding.resource_name or resource_id,
+                service=finding.service,
+                region=finding.region,
+                importance=AssetImportance.MEDIUM,  # 태그 정보가 없으므로 중간 중요도
+                confidentiality=3,
+                integrity=3,
+                availability=3
+            )
+        return list(derived.values())
+
     def assess_risks(
         self,
         assets: List[Asset],
@@ -518,13 +569,13 @@ class ProwlerISMS2025:
         
         assessments = []
         
-        # 자산별로 발견 사항 그룹화
-        asset_findings = {}
+        # 자산별로 발견 사항 그룹화 (리소스 ARN 또는 이름이 자산 ID 와 일치)
+        asset_findings: Dict[str, List[SecurityFinding]] = {asset.asset_id: [] for asset in assets}
         for finding in findings:
-            resource_id = finding.resource_id
-            if resource_id not in asset_findings:
-                asset_findings[resource_id] = []
-            asset_findings[resource_id].append(finding)
+            for key in (finding.resource_id, finding.resource_name):
+                if key and key in asset_findings:
+                    asset_findings[key].append(finding)
+                    break
         
         # 각 자산에 대한 위험 평가
         for asset in assets:
@@ -533,8 +584,11 @@ class ProwlerISMS2025:
             # 위험 점수 계산
             risk_score = self._calculate_risk_score(asset, asset_findings_list)
             
-            # 위험 등급 결정
-            risk_level = self._determine_risk_level_from_score(risk_score)
+            # 위험 등급 결정: 점수 등급과 가장 심각한 FAIL 발견 사항 등급 중 높은 쪽
+            risk_level = max(
+                [self._determine_risk_level_from_score(risk_score), *(f.risk_level for f in asset_findings_list)],
+                key=RISK_LEVEL_ORDER.index
+            )
             
             # 발견 사항 통계
             critical_count = sum(1 for f in asset_findings_list if f.risk_level == RiskLevel.CRITICAL)
@@ -581,7 +635,7 @@ class ProwlerISMS2025:
             RiskLevel.HIGH: 15,
             RiskLevel.MEDIUM: 8,
             RiskLevel.LOW: 3,
-            RiskLevel.INFO: 1
+            RiskLevel.INFO: 0  # PASS·MANUAL 은 위험 점수를 올리지 않음
         }
         
         total_score = sum(base_scores.get(f.risk_level, 0) for f in findings)
@@ -639,7 +693,13 @@ class ProwlerISMS2025:
                 'high_risks': len([a for a in assessments if a.risk_level == RiskLevel.HIGH]),
                 'medium_risks': len([a for a in assessments if a.risk_level == RiskLevel.MEDIUM]),
                 'low_risks': len([a for a in assessments if a.risk_level == RiskLevel.LOW]),
-                'average_risk_score': round(sum(a.risk_score for a in assessments) / len(assessments) if assessments else 0, 2)
+                'average_risk_score': round(
+                    sum(a.risk_score for a in assessments) / len(assessments) if assessments else 0, 2),
+                'fail_findings_by_severity': {
+                    level.value: sum(1 for f in findings if f.status == 'FAIL' and f.risk_level == level)
+                    for level in (RiskLevel.CRITICAL, RiskLevel.HIGH, RiskLevel.MEDIUM, RiskLevel.LOW)
+                },
+                'findings_by_status': dict(Counter(f.status for f in findings))
             },
             'assets': [asdict(asset) for asset in assets],
             'assessments': [
@@ -695,9 +755,12 @@ class ProwlerISMS2025:
         logger.info(f"위험 관리 보고서 생성 완료: {report_file}")
         return report_file
     
-    def run_full_assessment(self) -> Dict[str, Any]:
+    def run_full_assessment(self, compliance_framework: Optional[str] = ISMS_P_COMPLIANCE) -> Dict[str, Any]:
         """
         전체 평가 실행 (자산 식별 + 보안 점검 + 위험 평가)
+
+        Args:
+            compliance_framework: Prowler 컴플라이언스 이름 (기본: ISMS-P)
         
         Returns:
             평가 결과 딕셔너리
@@ -711,11 +774,12 @@ class ProwlerISMS2025:
             
             # 2. Prowler 보안 점검
             logger.info("2단계: Prowler 보안 점검")
-            prowler_output = self.run_prowler_scan(output_format='json', compliance_framework=ISMS_P_COMPLIANCE)
+            prowler_output = self.run_prowler_scan(output_format='json', compliance_framework=compliance_framework)
             
-            # 3. 결과 파싱
+            # 3. 결과 파싱 (인벤토리에 없는 리소스는 발견 사항에서 자산으로 도출)
             logger.info("3단계: 결과 파싱")
             findings = self.parse_prowler_results(prowler_output)
+            assets = assets + self.assets_from_findings(findings, assets)
             
             # 4. 위험 평가
             logger.info("4단계: 위험 평가")
@@ -745,15 +809,39 @@ class ProwlerISMS2025:
             raise
 
 
-def main():
+def build_parser(config: Config) -> argparse.ArgumentParser:
+    """명령행 인자 파서"""
+    parser = argparse.ArgumentParser(
+        description='ISMS-P 2025 Prowler 자산 식별 및 위험 평가 (Prowler 5.x)')
+    parser.add_argument('--profile', default=config.aws_profile, help='AWS 프로필 (기본: twodragon)')
+    parser.add_argument('--region', default=config.aws_region, help='AWS 리전 (기본: ap-northeast-2)')
+    parser.add_argument('--compliance', default=ISMS_P_COMPLIANCE,
+                        help=f'Prowler 컴플라이언스 이름 (기본: {ISMS_P_COMPLIANCE})')
+    parser.add_argument('--output-dir', default=os.getenv('ISMS_OUTPUT_DIR', str(DEFAULT_OUTPUT_DIR)),
+                        help='Prowler 결과·compliance/·위험 보고서 저장 디렉토리 '
+                             '(기본: ISMS_OUTPUT_DIR 또는 스크립트 옆 output/)')
+    parser.add_argument('--dry-run', action='store_true',
+                        help='실행할 Prowler 명령만 출력하고 종료 (AWS 호출·스캔 없음)')
+    return parser
+
+
+def main(argv: Optional[List[str]] = None):
     """메인 함수"""
+    config = Config.from_env()
+    args = build_parser(config).parse_args(argv)
+    config.aws_profile = args.profile
+    config.aws_region = args.region
+    config.output_dir = args.output_dir
+
     try:
-        # 설정 로드
-        config = Config.from_env()
-        
-        # 평가 실행
         assessor = ProwlerISMS2025(config)
-        results = assessor.run_full_assessment()
+        if args.dry_run:
+            cmd, _ = assessor.build_prowler_command(output_format='json', compliance_framework=args.compliance)
+            print(shlex.join(cmd))
+            return
+
+        # 평가 실행
+        results = assessor.run_full_assessment(compliance_framework=args.compliance)
         
         # 결과 출력
         print("\n=== 평가 결과 요약 ===")
