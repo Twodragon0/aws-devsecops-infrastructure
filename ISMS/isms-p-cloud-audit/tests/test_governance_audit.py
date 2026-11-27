@@ -233,7 +233,7 @@ class TestAnalyzeEventSelectors:
             'ReadWriteType': 'ReadOnly',
             'DataResources': [{'Type': 'AWS::S3::Object', 'Values': ['arn:aws:s3']}]}]})
         assert result == {'selector_type': 'basic', 's3_read': True, 's3_write': False,
-                          'read_buckets': ['*'], 'write_buckets': [], 'excluded': []}
+                          'read_buckets': ['*'], 'write_buckets': [], 'excluded': [], 'scope_unknown': False}
 
     def test_management_events_only(self):
         result = ga.analyze_event_selectors(MANAGEMENT_ONLY)
@@ -327,7 +327,6 @@ def test_member_account_access_denied_everywhere(stubs, tmp_path):
         'Id': ORG_ID, 'FeatureSet': 'ALL', 'MasterAccountId': MGMT}})
     stubs['organizations'][1].add_client_error('list_roots', 'AccessDeniedException', 'denied', 400)
     stubs['cloudtrail'][1].add_client_error('describe_trails', 'AccessDeniedException', 'denied', 400)
-    stubs['s3'][1].add_client_error('list_buckets', 'AccessDenied', 'denied', 403)
     stubs['controltower'][1].add_client_error('list_landing_zones', 'AccessDeniedException', 'denied', 403)
 
     report = build_auditor(stubs, tmp_path).run()
@@ -339,8 +338,9 @@ def test_member_account_access_denied_everywhere(stubs, tmp_path):
         assert status[check] == 'UNKNOWN', check
     assert report['summary'] == {'PASS': 1, 'FAIL': 0, 'UNKNOWN': 11}
     assert {e['api'] for e in report['errors']} == {
-        'organizations:ListRoots', 'cloudtrail:DescribeTrails',
-        's3:ListAllMyBuckets', 'controltower:ListLandingZones'}
+        'organizations:ListRoots', 'cloudtrail:DescribeTrails', 'controltower:ListLandingZones'}
+    log = next(f for f in report['findings'] if f['check_id'] == 'GOV-LOG-01')
+    assert '관리 계정' in log['detail']
 
 
 def test_trail_status_access_denied_is_unknown(stubs, tmp_path):
@@ -353,7 +353,6 @@ def test_trail_status_access_denied_is_unknown(stubs, tmp_path):
         'IsOrganizationTrail': True, 'IsMultiRegionTrail': True}]}, {'includeShadowTrails': True})
     ct.add_client_error('get_trail_status', 'AccessDeniedException', 'denied', 400)
     ct.add_client_error('get_event_selectors', 'AccessDeniedException', 'denied', 400)
-    stubs['s3'][1].add_response('list_buckets', {'Buckets': []})
     stubs['controltower'][1].add_response('list_landing_zones', {'landingZones': []})
 
     report = build_auditor(stubs, tmp_path).run()
@@ -362,7 +361,9 @@ def test_trail_status_access_denied_is_unknown(stubs, tmp_path):
     assert report['report_metadata']['caller'] == {'account_id': None, 'arn': None}
     assert status['GOV-ORG-01'] == 'UNKNOWN'
     assert status['GOV-ORG-03'] == 'UNKNOWN'
-    assert status['GOV-CT-01'] == 'UNKNOWN'
+    for check in ('GOV-CT-01', 'GOV-CT-02', 'GOV-CT-03', 'GOV-CT-04', 'GOV-CT-05', 'GOV-LOG-01'):
+        assert status[check] == 'UNKNOWN', check
+    assert status['GOV-CTW-01'] == 'UNKNOWN'  # 조직 조회 불가 상태에서 랜딩 존 미발견
 
 
 def test_export_writes_masked_json_and_csv(stubs, tmp_path):
@@ -386,3 +387,288 @@ def test_export_writes_masked_json_and_csv(stubs, tmp_path):
     assert ct05['status'] == 'PASS'
     assert ct05['isms_p_title'] == '로그 및 접속기록 관리 / 이상행위 분석 및 모니터링'
     assert all(r['collected_at'] for r in rows)
+
+
+# ----------------------------------------------------------------------
+# 리뷰 회귀 테스트: 거짓 PASS 방지
+# ----------------------------------------------------------------------
+OU_WORK = 'ou-ab12-22222222'
+WORKLOAD = '777788889999'
+ALL_TAMPER = list(ga.TAMPER_ACTIONS)
+
+
+def deny(actions, resource: Any = '*', condition: Any = None, not_resource: Any = None, sid: str = 'Deny'):
+    stmt: Dict[str, Any] = {'Sid': sid, 'Effect': 'Deny', 'Action': actions}
+    if not_resource is not None:
+        stmt['NotResource'] = not_resource
+    else:
+        stmt['Resource'] = resource
+    if condition:
+        stmt['Condition'] = condition
+    return {'Version': '2012-10-17', 'Statement': [stmt]}
+
+
+def ou_target(ou_id: str, name: str) -> Dict[str, Any]:
+    return {'TargetId': ou_id, 'Arn': f'arn:aws:organizations::{MGMT}:ou/{ORG_ID}/{ou_id}',
+            'Name': name, 'Type': 'ORGANIZATIONAL_UNIT'}
+
+
+def stub_org_layout(org: Stubber, scps: List[Any], describe_fail: Any = ()) -> None:
+    """Root(관리 계정) → Security OU(log-archive), Workloads OU(workload) 조직 + 지정 SCP"""
+    org.add_response('describe_organization', {'Organization': {
+        'Id': ORG_ID, 'FeatureSet': 'ALL', 'MasterAccountId': MGMT,
+        'MasterAccountEmail': 'owner@example.com'}})
+    org.add_response('list_roots', {'Roots': [{'Id': ROOT_ID, 'Name': 'Root', 'PolicyTypes': [
+        {'Type': 'SERVICE_CONTROL_POLICY', 'Status': 'ENABLED'}]}]})
+    org.add_response('list_accounts_for_parent', {'Accounts': [
+        {'Id': MGMT, 'Name': 'management', 'Email': 'owner@example.com', 'Status': 'ACTIVE'}]},
+        {'ParentId': ROOT_ID})
+    org.add_response('list_organizational_units_for_parent', {'OrganizationalUnits': [
+        {'Id': OU_ID, 'Name': 'Security'}, {'Id': OU_WORK, 'Name': 'Workloads'}]}, {'ParentId': ROOT_ID})
+    for ou, acct, name in ((OU_ID, LOG_ARCHIVE, 'log-archive'), (OU_WORK, WORKLOAD, 'payments-prod')):
+        org.add_response('list_accounts_for_parent', {'Accounts': [
+            {'Id': acct, 'Name': name, 'Email': f'{name}@example.com', 'Status': 'ACTIVE'}]}, {'ParentId': ou})
+        org.add_response('list_organizational_units_for_parent', {'OrganizationalUnits': []}, {'ParentId': ou})
+    summaries = [policy_summary(f'p-scp{i:05d}', name, 'SERVICE_CONTROL_POLICY')
+                 for i, (name, _, _) in enumerate(scps)]
+    org.add_response('list_policies', {'Policies': summaries}, {'Filter': 'SERVICE_CONTROL_POLICY'})
+    for summary, (name, content, targets) in zip(summaries, scps):
+        if name in describe_fail:
+            org.add_client_error('describe_policy', 'AccessDeniedException', 'denied', 400,
+                                 expected_params={'PolicyId': summary['Id']})
+            org.add_response('list_targets_for_policy', {'Targets': targets}, {'PolicyId': summary['Id']})
+        else:
+            add_policy(org, summary, content, targets)
+
+
+def run_org_only(stubs, tmp_path, scps, describe_fail=()) -> Dict[str, Any]:
+    stub_identity(stubs, MGMT)
+    stub_org_layout(stubs['organizations'][1], scps, describe_fail)
+    stub_trail(stubs['cloudtrail'][1], ADVANCED_S3_READ)
+    stubs['s3'][1].add_response('list_buckets', {'Buckets': []})
+    stubs['controltower'][1].add_client_error('list_landing_zones', 'AccessDeniedException', 'denied', 403)
+    return build_auditor(stubs, tmp_path).run()
+
+
+def tamper_finding(report: Dict[str, Any]) -> Dict[str, Any]:
+    return next(f for f in report['findings'] if f['check_id'] == 'GOV-ORG-03')
+
+
+class TestTamperDenyStatementScope:
+    """HIGH-1 / HIGH-2: 조건·리소스로 범위가 좁혀진 Deny 는 완전 차단이 아님"""
+
+    def test_region_condition_is_partial_not_covered(self):
+        result = ga.analyze_tamper_deny(deny(ALL_TAMPER, condition={
+            'StringEquals': {'aws:RequestedRegion': 'ap-northeast-2'}}))
+        assert result['covered_actions'] == []
+        assert sorted(result['partial_actions']) == sorted(ALL_TAMPER)
+        assert 'aws:RequestedRegion' in result['partial_statements'][0]['reason']
+
+    def test_principal_exception_still_counts_and_is_recorded(self):
+        result = ga.analyze_tamper_deny(deny(ALL_TAMPER, condition={
+            'ArnNotLike': {'aws:PrincipalArn': ['arn:aws:iam::*:role/BreakGlass']}}))
+        assert result['missing_actions'] == [] and result['partial_actions'] == []
+        assert result['exceptions'][0]['values'] == ['arn:aws:iam::*:role/BreakGlass']
+
+    def test_not_operator_on_non_principal_key_is_partial(self):
+        result = ga.analyze_tamper_deny(deny(ALL_TAMPER, condition={
+            'StringNotEquals': {'aws:RequestedRegion': 'us-east-1'}}))
+        assert result['covered_actions'] == []
+
+    def test_specific_trail_resource_is_partial(self):
+        result = ga.analyze_tamper_deny(deny(ALL_TAMPER, resource='arn:aws:cloudtrail:*:*:trail/org-trail'))
+        assert result['covered_actions'] == []
+        assert 'Resource' in result['partial_statements'][0]['reason']
+
+    def test_all_trails_resource_is_full(self):
+        result = ga.analyze_tamper_deny(deny(ALL_TAMPER, resource=['arn:aws:cloudtrail:*:*:trail/*']))
+        assert result['missing_actions'] == []
+
+    def test_not_resource_is_partial(self):
+        result = ga.analyze_tamper_deny(deny(ALL_TAMPER, not_resource='arn:aws:cloudtrail:*:*:trail/sandbox'))
+        assert result['covered_actions'] == []
+        assert 'NotResource' in result['partial_statements'][0]['reason']
+
+    def test_conditioned_scp_attached_to_root_fails(self, stubs, tmp_path):
+        report = run_org_only(stubs, tmp_path, [
+            ('region-only', deny(ALL_TAMPER, condition={'StringEquals': {'aws:RequestedRegion': 'ap-northeast-2'}}),
+             [ROOT_TARGET])])
+        finding = tamper_finding(report)
+        assert finding['status'] == 'FAIL'
+        assert '조건' in finding['detail'] or 'partial' in finding['detail'].lower()
+
+
+class TestTamperDenyInheritance:
+    """HIGH-3: 대상(OU/계정)별 상속 범위로 판정"""
+
+    def test_scp_only_on_one_ou_leaves_other_ou_uncovered(self, stubs, tmp_path):
+        report = run_org_only(stubs, tmp_path, [
+            ('tamper-security-only', TAMPER_SCP, [ou_target(OU_ID, 'Security')])])
+        finding = tamper_finding(report)
+        assert finding['status'] == 'FAIL'
+        uncovered = finding['evidence']['uncovered_accounts']
+        assert [a['id'] for a in uncovered] == [WORKLOAD]
+        assert set(uncovered[0]['missing_actions']) == set(ALL_TAMPER)
+        assert [o['name'] for o in finding['evidence']['uncovered_ous']] == ['Workloads']
+        assert '관리 계정' in finding['detail']  # SCP 는 관리 계정에 적용되지 않음
+
+    def test_split_actions_on_different_ous_is_not_summed(self, stubs, tmp_path):
+        report = run_org_only(stubs, tmp_path, [
+            ('stop-delete', deny(ALL_TAMPER[:2]), [ou_target(OU_ID, 'Security')]),
+            ('update-put', deny(ALL_TAMPER[2:]), [ou_target(OU_WORK, 'Workloads')]),
+        ])
+        finding = tamper_finding(report)
+        assert finding['status'] == 'FAIL'
+        assert {a['id'] for a in finding['evidence']['uncovered_accounts']} == {LOG_ARCHIVE, WORKLOAD}
+
+    def test_split_actions_inherited_on_same_path_pass(self, stubs, tmp_path):
+        report = run_org_only(stubs, tmp_path, [
+            ('stop-delete-root', deny(ALL_TAMPER[:2]), [ROOT_TARGET]),
+            ('update-put-sec', deny(ALL_TAMPER[2:]), [ou_target(OU_ID, 'Security')]),
+            ('update-put-acct', deny(ALL_TAMPER[2:]), [{
+                'TargetId': WORKLOAD, 'Arn': f'arn:aws:organizations::{MGMT}:account/{ORG_ID}/{WORKLOAD}',
+                'Name': 'payments-prod', 'Type': 'ACCOUNT'}]),
+        ])
+        finding = tamper_finding(report)
+        assert finding['status'] == 'PASS'
+        assert finding['evidence']['uncovered_accounts'] == []
+
+    def test_describe_policy_failure_makes_incomplete_coverage_unknown(self, stubs, tmp_path):
+        """MEDIUM (e): 분석 불가 정책이 있으면 미적용 판정 대신 UNKNOWN"""
+        report = run_org_only(stubs, tmp_path, [
+            ('tamper-security-only', TAMPER_SCP, [ou_target(OU_ID, 'Security')]),
+            ('opaque', {}, [ou_target(OU_WORK, 'Workloads')]),
+        ], describe_fail=('opaque',))
+        finding = tamper_finding(report)
+        assert finding['status'] == 'UNKNOWN'
+        assert finding['evidence']['unanalyzable_policies'] == ['opaque']
+
+
+class TestAdvancedSelectorOperators:
+    """MEDIUM (b)"""
+
+    @staticmethod
+    def selector(*extra):
+        return {'AdvancedEventSelectors': [{'FieldSelectors': [
+            {'Field': 'eventCategory', 'Equals': ['Data']},
+            {'Field': 'resources.type', 'Equals': ['AWS::S3::Object']}, *extra]}]}
+
+    def test_read_only_not_equals_true_means_write_only(self):
+        result = ga.analyze_event_selectors(self.selector({'Field': 'readOnly', 'NotEquals': ['true']}))
+        assert result['s3_read'] is False and result['s3_write'] is True
+
+    def test_event_name_starts_with_get(self):
+        result = ga.analyze_event_selectors(self.selector({'Field': 'eventName', 'StartsWith': ['Get']}))
+        assert result['s3_read'] is True and result['s3_write'] is False
+
+    def test_event_name_not_starts_with_get_excludes_read(self):
+        result = ga.analyze_event_selectors(self.selector({'Field': 'eventName', 'NotStartsWith': ['Get']}))
+        assert result['s3_read'] is False
+
+    def test_arn_ends_with_only_is_unknown_scope(self):
+        result = ga.analyze_event_selectors(self.selector({'Field': 'resources.ARN', 'EndsWith': ['.csv']}))
+        assert result['read_buckets'] == ['?'] and result['scope_unknown'] is True
+
+    def test_unknown_scope_makes_ct05_unknown(self, stubs, tmp_path):
+        stub_identity(stubs, MGMT)
+        stubs['organizations'][1].add_client_error(
+            'describe_organization', 'AWSOrganizationsNotInUseException', 'not in use', 400)
+        stub_trail(stubs['cloudtrail'][1], self.selector(
+            {'Field': 'resources.ARN', 'NotEquals': ['arn:aws:s3:::logs/x']}), org_trail=False)
+        stubs['s3'][1].add_response('list_buckets', {'Buckets': []})
+        stubs['controltower'][1].add_response('list_landing_zones', {'landingZones': []})
+        assert by_id(build_auditor(stubs, tmp_path).run())['GOV-CT-05'] == 'UNKNOWN'
+
+
+def test_mask_redacts_session_email_and_names(stubs, tmp_path):
+    """MEDIUM (c)"""
+    stub_identity(stubs, MGMT)
+    stub_org_layout(stubs['organizations'][1], [('tamper', TAMPER_SCP, [ROOT_TARGET])])
+    stub_trail(stubs['cloudtrail'][1], ADVANCED_S3_READ)
+    stubs['s3'][1].add_response('list_buckets', {'Buckets': []})
+    stubs['controltower'][1].add_client_error('list_landing_zones', 'AccessDeniedException', 'denied', 403)
+    auditor = build_auditor(stubs, tmp_path)
+    json_path, _ = auditor.export(auditor.run(), mask=True)
+    text = json_path.read_text(encoding='utf-8')
+    for secret in ('assumed-role/Audit/session', 'owner@example.com', 'payments-prod', 'log-archive',
+                   'Workloads', MGMT):
+        assert secret not in text, secret
+    assert 'assumed-role/Audit/***' in text
+
+
+class TestLogArchiveOwnership:
+    """MEDIUM (d)"""
+
+    def setup_mgmt(self, stubs, bucket='central-logs'):
+        stub_identity(stubs, MGMT)
+        stub_org_layout(stubs['organizations'][1], [('tamper', TAMPER_SCP, [ROOT_TARGET])])
+        stub_trail(stubs['cloudtrail'][1], ADVANCED_S3_READ, bucket=bucket)
+        stubs['controltower'][1].add_client_error('list_landing_zones', 'AccessDeniedException', 'denied', 403)
+
+    def test_paginated_list_buckets_finds_local_bucket(self, stubs, tmp_path):
+        self.setup_mgmt(stubs)
+        s3 = stubs['s3'][1]
+        s3.add_response('list_buckets', {'Buckets': [{'Name': 'a'}], 'ContinuationToken': 't1'})
+        s3.add_response('list_buckets', {'Buckets': [{'Name': 'central-logs'}]}, {'ContinuationToken': 't1'})
+        assert by_id(build_auditor(stubs, tmp_path).run())['GOV-LOG-01'] == 'FAIL'
+
+    def test_list_denied_falls_back_to_expected_bucket_owner(self, stubs, tmp_path):
+        self.setup_mgmt(stubs)
+        s3 = stubs['s3'][1]
+        s3.add_client_error('list_buckets', 'AccessDenied', 'denied', 403)
+        s3.add_response('get_bucket_location', {'LocationConstraint': 'ap-northeast-2'},
+                        {'Bucket': 'central-logs', 'ExpectedBucketOwner': MGMT})
+        assert by_id(build_auditor(stubs, tmp_path).run())['GOV-LOG-01'] == 'FAIL'
+
+    def test_list_denied_and_owner_check_denied_is_unknown(self, stubs, tmp_path):
+        self.setup_mgmt(stubs)
+        s3 = stubs['s3'][1]
+        s3.add_client_error('list_buckets', 'AccessDenied', 'denied', 403)
+        s3.add_client_error('get_bucket_location', 'AccessDenied', 'denied', 403,
+                            expected_params={'Bucket': 'central-logs', 'ExpectedBucketOwner': MGMT})
+        assert by_id(build_auditor(stubs, tmp_path).run())['GOV-LOG-01'] == 'UNKNOWN'
+
+
+class TestControlTowerServiceAccess:
+    """LOW: 랜딩 존 미발견 시 trusted access 로 FAIL / UNKNOWN 구분"""
+
+    def run(self, stubs, tmp_path, principals):
+        stub_identity(stubs, MGMT)
+        stub_org_layout(stubs['organizations'][1], [('tamper', TAMPER_SCP, [ROOT_TARGET])])
+        stubs['organizations'][1].add_response('list_aws_service_access_for_organization', {
+            'EnabledServicePrincipals': [{'ServicePrincipal': p} for p in principals]})
+        stub_trail(stubs['cloudtrail'][1], ADVANCED_S3_READ)
+        stubs['s3'][1].add_response('list_buckets', {'Buckets': []})
+        stubs['controltower'][1].add_response('list_landing_zones', {'landingZones': []})
+        return by_id(build_auditor(stubs, tmp_path).run())['GOV-CTW-01']
+
+    def test_control_tower_trusted_but_not_in_region_is_unknown(self, stubs, tmp_path):
+        assert self.run(stubs, tmp_path, ['controltower.amazonaws.com']) == 'UNKNOWN'
+
+    def test_control_tower_not_trusted_is_fail(self, stubs, tmp_path):
+        assert self.run(stubs, tmp_path, ['sso.amazonaws.com']) == 'FAIL'
+
+
+class TestIamMatcher:
+    """LOW: fnmatch 대신 IAM 와일드카드(*, ?)만 해석"""
+
+    def test_question_mark_and_star(self):
+        assert ga.iam_match('cloudtrail:Stop?ogging', 'cloudtrail:StopLogging')
+        assert ga.iam_match('cloudtrail:*Trail', 'cloudtrail:DeleteTrail')
+
+    def test_brackets_are_literal(self):
+        assert not ga.iam_match('cloudtrail:[S]topLogging', 'cloudtrail:StopLogging')
+
+    def test_non_string_pattern_is_ignored(self):
+        assert not ga.iam_match({'bad': 'value'}, 'cloudtrail:StopLogging')
+        assert ga.analyze_tamper_deny(deny([{'bad': 1}, 'cloudtrail:*']))['missing_actions'] == []
+
+
+def test_clients_use_adaptive_retries(monkeypatch):
+    """LOW: 스로틀링 대비 adaptive 재시도"""
+    from utils.aws_clients import AWSClientManager
+    monkeypatch.setattr(ga, 'get_aws_clients', lambda region, profile: AWSClientManager(region, None))
+    config = Config()
+    config.aws_profile = None
+    client = ga.GovernanceAuditor(config)._client('cloudtrail')
+    assert client.meta.config.retries == {'mode': 'adaptive', 'total_max_attempts': 10}

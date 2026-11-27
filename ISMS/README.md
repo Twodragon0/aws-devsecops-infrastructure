@@ -644,12 +644,12 @@ python risk_dashboard.py isms_risk_report_20241201_120000.json
 클라우드 시큐리티 9기 5주차(멀티 계정 거버넌스) 실습용 수집기입니다. `isms-p-cloud-audit/governance_audit.py`는 **읽기 전용 API만** 호출해 아래 항목을 확인하고, ISMS-P 인증기준 번호를 붙인 PASS / FAIL / UNKNOWN 증적을 JSON과 CSV로 남깁니다.
 
 - **Organizations**: 기능 세트(ALL), OU 트리와 계정, 대상(Root/OU/계정)별 SCP·RCP 연결
-- **CloudTrail 변조 차단 SCP**: `cloudtrail:StopLogging`, `DeleteTrail`, `UpdateTrail`, `PutEventSelectors` Deny 여부와 `ArnNotLike` 등 예외 주체
+- **CloudTrail 변조 차단 SCP**: `cloudtrail:StopLogging`, `DeleteTrail`, `UpdateTrail`, `PutEventSelectors` Deny를 Root → OU → 계정 경로로 상속받는지 계정별로 계산합니다. 관리 계정을 뺀 모든 멤버 계정이 4개 액션을 모두 상속받아야 PASS이며, 빠진 OU·계정을 증적에 남깁니다. 리전 조건(`aws:RequestedRegion` 등)이 붙거나 Resource가 특정 추적으로 좁혀진 Deny는 부분 적용(partial)으로만 기록합니다. `ArnNotLike aws:PrincipalArn` 같은 주체 예외는 허용하되 목록으로 남깁니다. SCP는 관리 계정에 적용되지 않습니다.
 - **조직 추적**: 조직 추적 여부, 다중 리전, 로깅 상태(`GetTrailStatus`), 로그 파일 무결성 검증, SSE-KMS
 - **S3 데이터 이벤트**: 기본/고급 이벤트 선택기에서 GetObject 등 읽기 이벤트를 어떤 버킷에 대해 수집하는지
-- **중앙 로그 아카이브**: 추적 버킷이 현재 계정 밖(Log Archive 계정)에 있는지
+- **중앙 로그 아카이브**: 관리 계정에서 실행할 때 추적 버킷이 관리 계정 소유가 아닌지 (`ListBuckets` 페이지네이션, 권한이 없으면 `GetBucketLocation` + `ExpectedBucketOwner`). 다른 계정에서 실행하면 UNKNOWN
 - **SIEM 수집 경로**: CloudWatch Logs 연동 여부 (S3 기반 SIEM은 수동 확인 → UNKNOWN)
-- **Control Tower**: 랜딩 존 상태·드리프트, 활성화된 컨트롤 수
+- **Control Tower**: 랜딩 존 상태·드리프트, 활성화된 컨트롤 수. 랜딩 존이 안 보이면 Organizations trusted access(`controltower.amazonaws.com`)로 "미사용(FAIL)"과 "다른 홈 리전(UNKNOWN)"을 구분
 
 ### 실행
 
@@ -660,18 +660,20 @@ cd isms-p-cloud-audit
 # 관리 계정(또는 Organizations 위임 관리자 계정), Control Tower 홈 리전에서 실행
 python governance_audit.py --profile twodragon --region ap-northeast-2 --output-dir ./output
 
-# 수강생과 공유할 때는 계정 ID 마스킹
+# 수강생과 공유할 때는 계정 ID·이메일·역할 세션 이름·계정/OU 이름 마스킹
 python governance_audit.py --mask-account-ids --output-dir ./output
 ```
 
 출력: `governance_evidence_YYYYMMDD_HHMMSS.json` (원본 응답 + 판정), `governance_evidence_YYYYMMDD_HHMMSS.csv` (항목별 판정, 수집 시각 포함). 두 파일 모두 `ISMS/.gitignore`(`*.json`, `*.csv`, `output/`)로 커밋에서 제외됩니다.
 
 - 단독 계정(`AWSOrganizationsNotInUseException`)은 조직 항목을 FAIL로 기록하고 CloudTrail 점검은 계속합니다.
-- 멤버 계정이나 권한이 부족한 경우 해당 항목만 UNKNOWN으로 남기고 `errors`에 API와 오류 코드를 기록합니다.
+- 멤버 계정이나 권한이 부족한 경우 해당 항목만 UNKNOWN으로 남기고 `errors`에 API와 오류 코드를 기록합니다. `GetTrailStatus`가 실패해 로깅 여부를 확인하지 못하면 추적 관련 항목도 FAIL 대신 UNKNOWN입니다.
+- 정책 본문을 읽지 못한 SCP(`DescribePolicy` 실패)가 미적용 계정의 경로에 있으면 GOV-ORG-03은 UNKNOWN이며, 분석하지 못한 정책 이름을 남깁니다.
+- API 호출은 adaptive 재시도(최초 호출 포함 최대 10회)를 사용합니다.
 
 ### 필요한 IAM 권한 (최소 권한, 읽기 전용)
 
-IAM 정책 린터 [parliament](https://github.com/duo-labs/parliament)로 액션 이름과 리소스 범위를 검증했습니다 (경고 0건). `DescribeOrganization`을 제외한 조직 구조·정책 조회(`ListRoots`, `ListPolicies` 등)는 관리 계정 또는 위임 관리자 계정에서만 결과를 돌려줍니다.
+수집기가 호출하는 API와 정확히 같은 16개 액션입니다 (`sts:GetCallerIdentity`는 권한이 필요 없음). IAM 정책 린터 [parliament](https://github.com/duo-labs/parliament)로 액션 이름과 리소스 범위를 검증했습니다 (경고 0건). `DescribeOrganization`을 제외한 조직 구조·정책 조회(`ListRoots`, `ListPolicies` 등)는 관리 계정 또는 위임 관리자 계정에서만 결과를 돌려줍니다.
 
 ```json
 {
@@ -685,7 +687,8 @@ IAM 정책 린터 [parliament](https://github.com/duo-labs/parliament)로 액션
         "organizations:ListRoots",
         "organizations:ListOrganizationalUnitsForParent",
         "organizations:ListAccountsForParent",
-        "organizations:ListPolicies"
+        "organizations:ListPolicies",
+        "organizations:ListAWSServiceAccessForOrganization"
       ],
       "Resource": "*"
     },
@@ -733,6 +736,12 @@ IAM 정책 린터 [parliament](https://github.com/duo-labs/parliament)로 액션
       "Effect": "Allow",
       "Action": "s3:ListAllMyBuckets",
       "Resource": "*"
+    },
+    {
+      "Sid": "LogArchiveOwnerFallback",
+      "Effect": "Allow",
+      "Action": "s3:GetBucketLocation",
+      "Resource": "arn:aws:s3:::*"
     }
   ]
 }
@@ -746,7 +755,7 @@ IAM 정책 린터 [parliament](https://github.com/duo-labs/parliament)로 액션
 |---------|------|-----------------|
 | GOV-ORG-01 | Organizations 모든 기능(ALL) 활성화 | 2.1.3 정보자산 관리, 2.5.5 특수 계정 및 권한 관리 |
 | GOV-ORG-02 | 사용자 정의 SCP 연결 | 2.5.5 특수 계정 및 권한 관리 |
-| GOV-ORG-03 | CloudTrail 변조 차단 SCP + 예외 주체 | 2.9.4 로그 및 접속기록 관리, 2.10.1 보안시스템 운영 |
+| GOV-ORG-03 | CloudTrail 변조 차단 SCP를 모든 멤버 계정이 상속 (조건·리소스 제한은 partial, 주체 예외 기록) | 2.9.4 로그 및 접속기록 관리, 2.10.1 보안시스템 운영 |
 | GOV-ORG-04 | 사용자 정의 RCP 연결 | 2.5.5 특수 계정 및 권한 관리, 2.6.1 네트워크 접근 |
 | GOV-CT-01 | 조직 추적 로깅 | 2.9.4 로그 및 접속기록 관리, 2.11.3 이상행위 분석 및 모니터링 |
 | GOV-CT-02 | 다중 리전 추적 | 2.9.4 |
@@ -754,7 +763,7 @@ IAM 정책 린터 [parliament](https://github.com/duo-labs/parliament)로 액션
 | GOV-CT-04 | SSE-KMS 암호화 | 2.9.4, 2.10.1 |
 | GOV-CT-05 | S3 데이터 이벤트(읽기) 수집 | 2.9.4, 2.11.3 |
 | GOV-CT-06 | CloudWatch Logs 연동 (SIEM 수집 경로) | 2.9.5 로그 및 접속기록 점검, 2.11.3 |
-| GOV-LOG-01 | 별도 계정 중앙 로그 아카이브 | 2.9.4 |
+| GOV-LOG-01 | 별도 계정 중앙 로그 아카이브 (관리 계정에서 실행 시 판별) | 2.9.4 |
 | GOV-CTW-01 | Control Tower 랜딩 존 ACTIVE + 드리프트 없음 | 2.10.1 보안시스템 운영 |
 
 참고 문서: [RCP](https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_rcps.html), [SCP](https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_scps.html), [조직 추적](https://docs.aws.amazon.com/awscloudtrail/latest/userguide/creating-trail-organization.html), [데이터 이벤트](https://docs.aws.amazon.com/awscloudtrail/latest/userguide/logging-data-events-with-cloudtrail.html), [Control Tower](https://docs.aws.amazon.com/controltower/latest/userguide/what-is-control-tower.html)
@@ -763,8 +772,8 @@ IAM 정책 린터 [parliament](https://github.com/duo-labs/parliament)로 액션
 
 ```bash
 cd ISMS
-pip install boto3 pytest
-python -m pytest        # 실제 AWS 호출 없이 botocore Stubber로 16개 테스트 실행
+pip install -r requirements-dev.txt
+python -m pytest        # 실제 AWS 호출 없이 botocore Stubber로 실행
 ```
 
 ## 자동화

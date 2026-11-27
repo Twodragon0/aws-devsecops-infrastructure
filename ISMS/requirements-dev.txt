@@ -1,0 +1,4 @@
+# ISMS 스크립트 테스트용 의존성 (cd ISMS && python -m pytest)
+boto3>=1.35.60
+botocore>=1.35.60
+pytest>=8.0.0
