@@ -6,6 +6,10 @@
 
 4주차 온라인 교육에서 Prowler CSV/ASFF 결과를 Security Hub CSPM에 연결하는 실습은 [labs/securityhub-prowler](./labs/securityhub-prowler/README.md)에 있습니다. 기본은 로컬 결과 확인이며, CloudFormation으로 Hub를 켜고 Finding을 전송하는 단계는 선택적으로 실행합니다.
 
+5주차(멀티 계정 거버넌스)에서는 [`governance_audit.py`](#4-governance_auditpy---멀티-계정-거버넌스-증적-5주차)로 Organizations SCP·RCP, 조직 CloudTrail과 S3 데이터 이벤트, 중앙 로그 아카이브, Control Tower 상태를 읽기 전용으로 수집합니다.
+
+> "ISMS-P 2025"는 강의 회차 이름입니다. 현재 인증기준은 2023.10.5 고시 개정 기준 101개 항목이며, 세부 현황은 [상위 README의 인증기준 현황](../README.md#isms-p-인증기준-현황-2026-11-27-확인)을 참고하세요.
+
 ISMS-P 2025 가이드의 주요 요구사항:
 - **자산 식별 및 관리**: 클라우드 자산의 자동 식별 및 중요도 평가
 - **위험 평가**: CIA(기밀성, 무결성, 가용성) 기준 위험 평가
@@ -74,6 +78,31 @@ aws sso login --profile twodragon
 
 # 2. 스캔 실행
 python prowler-trivy-scan.py
+```
+
+### 4. `governance_audit.py` - 멀티 계정 거버넌스 증적 (5주차)
+
+Organizations, Control Tower, CloudTrail을 읽기 전용 API로 조회해 ISMS-P 항목별 PASS / FAIL / UNKNOWN 증적을 만듭니다. 관리 계정(또는 위임 관리자 계정)의 Control Tower 홈 리전에서 실행하세요.
+
+```bash
+aws sso login --profile twodragon
+python governance_audit.py --profile twodragon --region ap-northeast-2 --output-dir ./output
+
+# 공유용: 출력 파일의 계정 ID 마스킹
+python governance_audit.py --mask-account-ids --output-dir ./output
+```
+
+**점검 항목:** 조직 기능 세트, 사용자 정의 SCP·RCP 연결, CloudTrail 변조 차단 Deny(`StopLogging`/`DeleteTrail`/`UpdateTrail`/`PutEventSelectors`)와 `ArnNotLike` 예외, 조직 추적·다중 리전·무결성 검증·KMS, S3 데이터 이벤트(읽기), CloudWatch Logs 연동, 별도 계정 로그 버킷, Control Tower 랜딩 존 드리프트
+
+**출력:**
+- `governance_evidence_YYYYMMDD_HHMMSS.json`: 판정 + 원본 응답 + 오류(API, 코드)
+- `governance_evidence_YYYYMMDD_HHMMSS.csv`: 수집 시각, 점검 ID, 판정, ISMS-P 항목 번호·명칭
+
+단독 계정, 멤버 계정, 권한 부족 상황에서도 중단하지 않고 해당 항목을 FAIL 또는 UNKNOWN으로 기록합니다. 필요한 IAM 권한(최소 권한 정책 JSON)과 ISMS-P 매핑표는 [상위 README](../README.md#5주차-거버넌스-증적-수집-organizations-control-tower-cloudtrail)에 있습니다.
+
+```bash
+# 단위 테스트 (AWS 호출 없음)
+cd .. && python -m pytest
 ```
 
 ## 설치 및 설정
@@ -162,7 +191,7 @@ Prowler는 [공식 GitHub 저장소](https://github.com/prowler-cloud/prowler)�
 # Prowler 설치 확인
 prowler -v
 
-# Prowler 버전 확인 (Python 3.9 이상, 3.13 미만 필요)
+# Python 버전 확인 (Prowler 5.x: Python 3.10 이상, 3.14 미만)
 python3 --version
 
 # Prowler 설치 (PyPI)
@@ -379,8 +408,10 @@ aws sts get-caller-identity --profile twodragon
 - [Prowler GitHub 저장소](https://github.com/prowler-cloud/prowler)
 - [AWS SSO 사용자 가이드](https://docs.aws.amazon.com/singlesignon/latest/userguide/what-is.html)
 - [AWS CLI SSO 설정](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sso.html)
-- [ISMS-P 인증 가이드](https://isms.go.kr)
-- [AWS 보안 모범 사례](https://aws.amazon.com/security/best-practices/)
+- [ISMS-P 인증 제도 안내 (KISA)](https://www.kisa.or.kr/1050602)
+- [ISMS-P 인증 고시 원문 (국가법령정보센터)](https://www.law.go.kr/행정규칙/정보보호및개인정보보호관리체계인증등에관한고시)
+- [Prowler Hub: kisa_isms_p_2023_aws](https://hub.prowler.com/compliance/kisa_isms_p_2023_aws)
+- [AWS Well-Architected 보안 원칙](https://docs.aws.amazon.com/wellarchitected/latest/security-pillar/welcome.html)
 
 ## 라이선스
 

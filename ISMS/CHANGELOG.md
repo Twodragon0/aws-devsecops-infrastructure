@@ -1,5 +1,25 @@
 # 변경 이력
 
+## [9기 5주차 거버넌스 증적] - 2026-11-27
+
+### 추가
+- `isms-p-cloud-audit/governance_audit.py`: 멀티 계정 거버넌스 증적 수집기 (읽기 전용)
+  - Organizations 기능 세트, OU 트리, 대상별 SCP·RCP 연결
+  - CloudTrail 변조 차단 Deny(StopLogging/DeleteTrail/UpdateTrail/PutEventSelectors)와 `ArnNotLike` 등 예외 주체 추출
+  - 조직 추적, 다중 리전, 로깅 상태, 무결성 검증, KMS, 기본/고급 이벤트 선택기의 S3 데이터 이벤트(읽기) 범위
+  - 별도 계정 로그 버킷(중앙 로그 아카이브), CloudWatch Logs 연동, Control Tower 랜딩 존·드리프트
+  - ISMS-P 인증기준 항목(2.1.3, 2.5.5, 2.6.1, 2.9.4, 2.9.5, 2.10.1, 2.11.3) 매핑 PASS/FAIL/UNKNOWN 증적을 JSON + CSV로 출력, `--mask-account-ids` 지원
+  - 단독 계정(`AWSOrganizationsNotInUseException`), 멤버 계정, AccessDenied 를 중단 없이 UNKNOWN/FAIL로 기록
+- `isms-p-cloud-audit/tests/`: botocore Stubber 기반 단위 테스트 16개, `pytest.ini`
+
+### 변경
+- `README.md`: ISMS-P 인증기준 현황(2023.10.5 고시 개정, 101개 항목, 2026.4.10 강화방안) 추가, Prowler 5.x 컴플라이언스 이름(`kisa_isms_p_2023_aws`, `kisa_isms_p_2023_korean_aws`, `iso27001_2022_aws`)과 CLI 예시, 5주차 거버넌스 증적 수집 절차·최소 권한 IAM 정책·ISMS-P 매핑표, 9기 4주차 포스트 링크
+- `isms-p-cloud-audit/README.md`, `USAGE_EXAMPLES.md`: `governance_audit.py` 사용법, Prowler 5.x 컴플라이언스 실행 방법, Python 요구 버전(3.10 이상 3.14 미만)
+- 접속되지 않는 링크(`isms.go.kr`, AWS 보안 모범 사례 404)를 KISA ISMS-P 안내, 국가법령정보센터 고시, AWS Well-Architected 보안 원칙으로 교체
+
+### 알려진 제한
+- `prowler_isms_2025.py`의 Prowler 호출 옵션(`-M json`, `-f`, `-c`)은 Prowler 3.x 기준이라 5.x와 맞지 않습니다. 이번 변경에서는 문서에 CLI 대안만 안내했습니다.
+
 ## [개선 버전] - 2024-12
 
 ### 주요 개선 사항
