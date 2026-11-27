@@ -44,6 +44,10 @@ logger = setup_logger('isms.prowler_isms_2025')
 # Prowler 5.x 기본 ISMS-P 컴플라이언스 프레임워크 (prowler aws --list-compliance 로 확인)
 ISMS_P_COMPLIANCE = 'kisa_isms_p_2023_korean_aws'
 
+
+class UnrecognizedFormatError(AssetCollectionError):
+    """Prowler 결과 형식(발견 사항 리스트 또는 findings 키)이 아닌 입력"""
+
 # 기존 output_format 인자 → Prowler 5.x -M 값, 결과 파일 확장자
 PROWLER_OUTPUT_FORMATS = {'json': 'json-ocsf', 'json-ocsf': 'json-ocsf', 'csv': 'csv',
                           'html': 'html', 'json-asff': 'json-asff'}
@@ -295,17 +299,22 @@ class ProwlerISMS2025:
                     finding = self._parse_finding(item)
                     if finding:
                         findings.append(finding)
-            elif isinstance(data, dict):
-                # 다른 형식 처리
-                if 'findings' in data:
-                    for item in data['findings']:
-                        finding = self._parse_finding(item)
-                        if finding:
-                            findings.append(finding)
+            elif isinstance(data, dict) and isinstance(data.get('findings'), list):
+                for item in data['findings']:
+                    finding = self._parse_finding(item)
+                    if finding:
+                        findings.append(finding)
+            else:
+                raise UnrecognizedFormatError(
+                    "Prowler 결과 형식이 아닙니다 (발견 사항 리스트 또는 'findings' 리스트를 가진 JSON 객체 필요)")
             
+            if not findings:
+                logger.warning("파싱된 보안 발견 사항이 0개입니다 (빈 Prowler 결과)")
             logger.info(f"총 {len(findings)}개의 보안 발견 사항 파싱 완료")
             return findings
         
+        except UnrecognizedFormatError:
+            raise
         except Exception as e:
             logger.error(f"Prowler 결과 파싱 실패: {e}")
             raise AssetCollectionError(f"결과 파싱 실패: {e}")
@@ -905,7 +914,7 @@ def build_parser(config: Config) -> argparse.ArgumentParser:
         description='ISMS-P 2025 Prowler 자산 식별 및 위험 평가 (Prowler 5.x)')
     parser.add_argument('--profile', default=config.aws_profile, help='AWS 프로필 (기본: twodragon)')
     parser.add_argument('--region', default=config.aws_region, help='AWS 리전 (기본: ap-northeast-2)')
-    parser.add_argument('--compliance', default=ISMS_P_COMPLIANCE,
+    parser.add_argument('--compliance', default=None,
                         help=f'Prowler 컴플라이언스 이름 (기본: {ISMS_P_COMPLIANCE}, --input 과 함께 지정 불가)')
     parser.add_argument('--output-dir', default=os.getenv('ISMS_OUTPUT_DIR', str(DEFAULT_OUTPUT_DIR)),
                         help='Prowler 결과·compliance/·위험 보고서 저장 디렉토리 '
@@ -928,9 +937,9 @@ def main(argv: Optional[List[str]] = None):
     args = parser.parse_args(argv)
     if args.with_inventory and not args.input:
         parser.error('--with-inventory 는 --input 과 함께만 사용할 수 있습니다')
-    if args.input and args.compliance != ISMS_P_COMPLIANCE:
+    if args.input and args.compliance is not None:
         parser.error('--input(오프라인 재평가)과 --compliance(스캔 옵션)는 함께 사용할 수 없습니다')
-    compliance = args.compliance
+    compliance = args.compliance or ISMS_P_COMPLIANCE
     input_file = Path(args.input) if args.input else None
     if input_file and not args.dry_run and not input_file.is_file():
         parser.error(f'--input 파일을 찾을 수 없습니다: {input_file}')
@@ -942,9 +951,11 @@ def main(argv: Optional[List[str]] = None):
         assessor = ProwlerISMS2025(config)
         if input_file:
             if args.dry_run:
-                print(f"읽을 파일: {input_file}")
+                print(f"입력 파일: {input_file} ({'있음' if input_file.is_file() else '없음'})")
                 print(f"보고서 저장 디렉토리: {assessor.output_dir}")
                 print(f"인벤토리 조회: {'예 (프로필 ' + config.aws_profile + ')' if args.with_inventory else '아니오'}")
+                if not input_file.is_file():
+                    sys.exit(2)
                 return
             inventory = assessor.identify_assets() if args.with_inventory else []
             results = assessor.assess_saved_results(input_file, inventory)
@@ -964,6 +975,8 @@ def main(argv: Optional[List[str]] = None):
         print(f"High 위험: {results['summary']['high_risks']}")
         print(f"\n보고서 파일: {results['report_file']}")
     
+    except UnrecognizedFormatError as e:
+        parser.error(f"--input 파일 형식을 인식할 수 없습니다: {input_file} ({e})")
     except Exception as e:
         logger.error(f"오류 발생: {e}", exc_info=True)
         sys.exit(1)

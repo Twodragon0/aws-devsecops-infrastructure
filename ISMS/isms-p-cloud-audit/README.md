@@ -51,7 +51,7 @@ python prowler_isms_2025.py --input ./output/prowler_scan_20260101_090000.ocsf.j
 python prowler_isms_2025.py --input ./output/prowler_scan_20260101_090000.ocsf.json --with-inventory --profile twodragon
 ```
 
-`--input` 은 json-ocsf 와 Prowler 레거시 JSON 을 모두 읽으며 `--compliance` 와 함께 쓸 수 없습니다. `--dry-run` 과 함께 쓰면 읽을 파일과 보고서를 쓸 디렉토리만 출력합니다. `--with-inventory` 없이는 인벤토리 자산이 없으므로 모든 자산의 중요도가 Medium 이고, 인벤토리 조회 시 스캔 때와 자산 수가 달라질 수 있습니다. 보고서의 `importance`, `risk_level` 은 `"High"` 처럼 값으로 저장됩니다 (이전 보고서의 `"AssetImportance.HIGH"` 형식도 `risk_dashboard.py` 가 그대로 읽습니다).
+`--input` 은 json-ocsf 와 Prowler 레거시 JSON 을 모두 읽으며 `--compliance` 와 함께 쓸 수 없습니다 (기본값과 같은 이름을 명시해도 오류, 종료 코드 2). Prowler 결과 형식이 아닌 JSON 은 오류(종료 코드 2)로 거부하고, 형식은 맞지만 발견 사항이 0개면 경고 후 보고서를 씁니다. `--dry-run` 과 함께 쓰면 입력 파일 존재 여부(`입력 파일: <경로> (있음|없음)`)와 보고서를 쓸 디렉토리만 출력하며, 파일이 없으면 종료 코드 2 입니다. `--with-inventory` 없이는 인벤토리 자산이 없으므로 모든 자산의 중요도가 Medium 이고, 인벤토리 조회 시 스캔 때와 자산 수가 달라질 수 있습니다. 보고서의 `importance`, `risk_level` 은 `"High"` 처럼 값으로 저장됩니다 (이전 보고서의 `"AssetImportance.HIGH"` 형식도 `risk_dashboard.py` 가 그대로 읽습니다).
 
 `--output-dir` 기본값은 `ISMS_OUTPUT_DIR` 환경 변수, 없으면 `isms-p-cloud-audit/output/` 입니다 (`.gitignore` 대상). Prowler 결과와 `compliance/` 디렉토리도 이 위치에 저장되므로 현재 작업 디렉토리에 계정 ID가 담긴 파일이 남지 않습니다.
 
