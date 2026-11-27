@@ -75,6 +75,13 @@ class AssetImportance(Enum):
     LOW = "Low"  # 모두 낮음
 
 
+def _json_default(obj: Any) -> Any:
+    """JSON 직렬화: Enum 은 이름이 아닌 값("High")으로, 나머지는 str"""
+    if isinstance(obj, Enum):
+        return obj.value
+    return str(obj)
+
+
 @dataclass
 class SecurityFinding:
     """보안 발견 사항"""
@@ -143,7 +150,7 @@ class ProwlerISMS2025:
             config: 설정 객체
         """
         self.config = config
-        self.clients = get_aws_clients(region=config.aws_region, profile=config.aws_profile)
+        self._clients = None  # AWS 클라이언트는 필요할 때만 생성 (--input 오프라인 재평가는 만들지 않음)
         self.output_dir = Path(config.output_dir)  # 생성은 스캔·보고서 저장 시점에 (--dry-run 은 생성하지 않음)
         
         # 위험 평가 기준 (ISMS-P 2025)
@@ -154,6 +161,12 @@ class ProwlerISMS2025:
             RiskLevel.LOW: 20
         }
     
+    @property
+    def clients(self):
+        if self._clients is None:
+            self._clients = get_aws_clients(region=self.config.aws_region, profile=self.config.aws_profile)
+        return self._clients
+
     def check_prowler_installed(self) -> bool:
         """Prowler 설치 여부 확인"""
         try:
@@ -815,11 +828,46 @@ class ProwlerISMS2025:
         
         # JSON 파일로 저장
         with open(report_file, 'w', encoding='utf-8') as f:
-            json.dump(report, f, indent=2, ensure_ascii=False, default=str)
+            json.dump(report, f, indent=2, ensure_ascii=False, default=_json_default)
         
         logger.info(f"위험 관리 보고서 생성 완료: {report_file}")
         return report_file
     
+    def assess_saved_results(self, results_file: Path, inventory: Sequence[Asset] = ()) -> Dict[str, Any]:
+        """
+        Prowler 결과 파일(OCSF 또는 레거시 JSON)을 파싱해 위험 평가·보고서 생성 (스캔·AWS 호출 없음)
+
+        Args:
+            results_file: Prowler 결과 JSON 파일
+            inventory: identify_assets() 인벤토리 자산 (없으면 발견 사항의 리소스만 자산으로 사용)
+
+        Returns:
+            평가 결과 딕셔너리
+        """
+        # 인벤토리에 없는 리소스는 발견 사항에서 자산으로 도출
+        logger.info("결과 파싱")
+        findings = self.parse_prowler_results(results_file)
+        assets = list(inventory) + self.assets_from_findings(findings, inventory)
+
+        logger.info("위험 평가")
+        assessments = self.assess_risks(assets, findings)
+
+        logger.info("보고서 생성")
+        report_file = self.generate_risk_report(assessments, assets, findings)
+
+        return {
+            'assets': assets,
+            'findings': findings,
+            'assessments': assessments,
+            'report_file': report_file,
+            'summary': {
+                'total_assets': len(assets),
+                'total_findings': len(findings),
+                'critical_risks': len([a for a in assessments if a.risk_level == RiskLevel.CRITICAL]),
+                'high_risks': len([a for a in assessments if a.risk_level == RiskLevel.HIGH])
+            }
+        }
+
     def run_full_assessment(self, compliance_framework: Optional[str] = ISMS_P_COMPLIANCE) -> Dict[str, Any]:
         """
         전체 평가 실행 (자산 식별 + 보안 점검 + 위험 평가)
@@ -841,33 +889,10 @@ class ProwlerISMS2025:
             logger.info("2단계: Prowler 보안 점검")
             prowler_output = self.run_prowler_scan(output_format='json', compliance_framework=compliance_framework)
             
-            # 3. 결과 파싱 (인벤토리에 없는 리소스는 발견 사항에서 자산으로 도출)
-            logger.info("3단계: 결과 파싱")
-            findings = self.parse_prowler_results(prowler_output)
-            assets = assets + self.assets_from_findings(findings, assets)
-            
-            # 4. 위험 평가
-            logger.info("4단계: 위험 평가")
-            assessments = self.assess_risks(assets, findings)
-            
-            # 5. 보고서 생성
-            logger.info("5단계: 보고서 생성")
-            report_file = self.generate_risk_report(assessments, assets, findings)
-            
+            # 3~5. 결과 파싱 → 위험 평가 → 보고서
+            results = self.assess_saved_results(prowler_output, assets)
             logger.info("=== ISMS-P 2025 전체 평가 완료 ===")
-            
-            return {
-                'assets': assets,
-                'findings': findings,
-                'assessments': assessments,
-                'report_file': report_file,
-                'summary': {
-                    'total_assets': len(assets),
-                    'total_findings': len(findings),
-                    'critical_risks': len([a for a in assessments if a.risk_level == RiskLevel.CRITICAL]),
-                    'high_risks': len([a for a in assessments if a.risk_level == RiskLevel.HIGH])
-                }
-            }
+            return results
         
         except Exception as e:
             logger.error(f"전체 평가 실패: {e}", exc_info=True)
@@ -881,32 +906,55 @@ def build_parser(config: Config) -> argparse.ArgumentParser:
     parser.add_argument('--profile', default=config.aws_profile, help='AWS 프로필 (기본: twodragon)')
     parser.add_argument('--region', default=config.aws_region, help='AWS 리전 (기본: ap-northeast-2)')
     parser.add_argument('--compliance', default=ISMS_P_COMPLIANCE,
-                        help=f'Prowler 컴플라이언스 이름 (기본: {ISMS_P_COMPLIANCE})')
+                        help=f'Prowler 컴플라이언스 이름 (기본: {ISMS_P_COMPLIANCE}, --input 과 함께 지정 불가)')
     parser.add_argument('--output-dir', default=os.getenv('ISMS_OUTPUT_DIR', str(DEFAULT_OUTPUT_DIR)),
                         help='Prowler 결과·compliance/·위험 보고서 저장 디렉토리 '
                              '(기본: ISMS_OUTPUT_DIR 또는 스크립트 옆 output/)')
     parser.add_argument('--dry-run', action='store_true',
-                        help='실행할 Prowler 명령만 출력하고 종료 (AWS 호출·스캔 없음)')
+                        help='실행할 Prowler 명령만 출력하고 종료 (AWS 호출·스캔 없음). '
+                             '--input 과 함께 쓰면 읽을 파일과 쓸 디렉토리만 출력')
+    parser.add_argument('--input', metavar='PATH',
+                        help='저장된 Prowler 결과(json-ocsf 또는 레거시 JSON)를 오프라인으로 재평가 '
+                             '(Prowler 실행·AWS 호출 없음, 스캔 옵션 --compliance 와 동시 사용 불가)')
+    parser.add_argument('--with-inventory', action='store_true',
+                        help='--input 재평가 시 --profile 로 EC2·S3·RDS 인벤토리를 조회해 자산 중요도 반영')
     return parser
 
 
 def main(argv: Optional[List[str]] = None):
     """메인 함수"""
     config = Config.from_env()
-    args = build_parser(config).parse_args(argv)
+    parser = build_parser(config)
+    args = parser.parse_args(argv)
+    if args.with_inventory and not args.input:
+        parser.error('--with-inventory 는 --input 과 함께만 사용할 수 있습니다')
+    if args.input and args.compliance != ISMS_P_COMPLIANCE:
+        parser.error('--input(오프라인 재평가)과 --compliance(스캔 옵션)는 함께 사용할 수 없습니다')
+    compliance = args.compliance
+    input_file = Path(args.input) if args.input else None
+    if input_file and not args.dry_run and not input_file.is_file():
+        parser.error(f'--input 파일을 찾을 수 없습니다: {input_file}')
     config.aws_profile = args.profile
     config.aws_region = args.region
     config.output_dir = args.output_dir
 
     try:
         assessor = ProwlerISMS2025(config)
-        if args.dry_run:
-            cmd, _ = assessor.build_prowler_command(output_format='json', compliance_framework=args.compliance)
+        if input_file:
+            if args.dry_run:
+                print(f"읽을 파일: {input_file}")
+                print(f"보고서 저장 디렉토리: {assessor.output_dir}")
+                print(f"인벤토리 조회: {'예 (프로필 ' + config.aws_profile + ')' if args.with_inventory else '아니오'}")
+                return
+            inventory = assessor.identify_assets() if args.with_inventory else []
+            results = assessor.assess_saved_results(input_file, inventory)
+        elif args.dry_run:
+            cmd, _ = assessor.build_prowler_command(output_format='json', compliance_framework=compliance)
             print(shlex.join(cmd))
             return
-
-        # 평가 실행
-        results = assessor.run_full_assessment(compliance_framework=args.compliance)
+        else:
+            # 평가 실행
+            results = assessor.run_full_assessment(compliance_framework=compliance)
         
         # 결과 출력
         print("\n=== 평가 결과 요약 ===")

@@ -31,6 +31,15 @@ python prowler_isms_2025.py --dry-run --profile twodragon --region ap-northeast-
 
 # 다른 컴플라이언스·출력 디렉토리로 실행
 python prowler_isms_2025.py --compliance iso27001_2022_aws --output-dir ./output/iso27001
+
+# 저장된 스캔 결과 오프라인 재평가 (Prowler 실행·AWS 호출 없음)
+python prowler_isms_2025.py --input output/prowler_scan_20261127_214833.ocsf.json --output-dir output/reassess
+
+# 읽을 파일과 쓸 디렉토리만 확인
+python prowler_isms_2025.py --input output/prowler_scan_20261127_214833.ocsf.json --dry-run
+
+# 인벤토리 자산 중요도까지 반영 (이때만 --profile 로 AWS 조회)
+python prowler_isms_2025.py --input output/prowler_scan_20261127_214833.ocsf.json --with-inventory --profile twodragon
 ```
 
 `--output-dir` 기본값은 `ISMS_OUTPUT_DIR`, 없으면 `isms-p-cloud-audit/output/` (`.gitignore` 대상) 입니다.

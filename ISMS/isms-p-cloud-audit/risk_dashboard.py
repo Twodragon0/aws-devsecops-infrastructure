@@ -18,6 +18,27 @@ from utils.logger import setup_logger
 logger = setup_logger('isms.risk_dashboard')
 
 
+IMPORTANCE_LEVELS = ('Critical', 'High', 'Medium', 'Low')
+
+
+def normalize_importance(value: Any) -> str:
+    """자산 중요도 정규화: "High" (현재 형식)와 "AssetImportance.HIGH" (이전 보고서 형식) 모두 허용"""
+    if not isinstance(value, str):
+        return 'Unknown'
+    name = value.rsplit('.', 1)[-1].strip().capitalize()
+    return name if name in IMPORTANCE_LEVELS else 'Unknown'
+
+
+def count_importance(assets: List[Dict[str, Any]]) -> Dict[str, int]:
+    """자산 중요도별 개수 (Critical → Low 순, 0건은 제외, 알 수 없는 값은 Unknown)"""
+    counts: Dict[str, int] = {}
+    for asset in assets:
+        key = normalize_importance(asset.get('importance'))
+        counts[key] = counts.get(key, 0) + 1
+    ordered = [*IMPORTANCE_LEVELS, 'Unknown']
+    return {level: counts[level] for level in ordered if level in counts}
+
+
 def generate_html_dashboard(report_file: Path, output_file: Path) -> None:
     """
     HTML 대시보드 생성
@@ -34,6 +55,8 @@ def generate_html_dashboard(report_file: Path, output_file: Path) -> None:
     
     summary = report.get('summary', {})
     assessments = report.get('assessments', [])
+    importance_counts = count_importance(report.get('assets', []))
+    importance_summary = ', '.join(f'{level} {count}' for level, count in importance_counts.items()) or 'N/A'
     
     # 위험 등급별 색상
     risk_colors = {
@@ -216,6 +239,7 @@ def generate_html_dashboard(report_file: Path, output_file: Path) -> None:
         
         <div class="table-container">
             <h3 style="margin-bottom: 20px;">자산별 위험 평가 상세</h3>
+            <p style="margin-bottom: 12px;">자산 중요도 분포: {importance_summary}</p>
             <table>
                 <thead>
                     <tr>
