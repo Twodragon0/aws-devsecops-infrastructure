@@ -63,8 +63,19 @@ EXCEPTION_OPERATORS: Tuple[str, ...] = (
     'ArnNotLike', 'ArnNotEquals', 'StringNotLike', 'StringNotEquals',
 )
 
-# 주체 예외로 인정하는 조건 키 접두사 (aws:PrincipalArn, aws:PrincipalAccount 등)
-PRINCIPAL_KEY_PREFIX = 'aws:principal'
+# 주체 예외로 인정하는 유일한 조건 키 (소문자 비교). aws:PrincipalOrgID/PrincipalAccount 등은
+# 조직 내부 주체를 거의 걸러내지 못하거나 차단을 무력화할 수 있어 예외로 인정하지 않음
+PRINCIPAL_ARN_KEY = 'aws:principalarn'
+
+# 예외 값이 이 임의 주체 ARN 중 하나라도 매칭하면 "너무 넓은 예외"
+BROAD_PRINCIPAL_PROBES: Tuple[str, ...] = (
+    'arn:aws:iam::000000000000:role/zz-probe-role',
+    'arn:aws:iam::000000000000:user/zz-probe-user',
+    'arn:aws:sts::000000000000:assumed-role/zz-probe-role/zz-probe-session',
+)
+
+# 비활성 계정 상태 (State 우선, 없으면 Status) - PASS 분모에서 제외
+INACTIVE_ACCOUNT_STATES = {'SUSPENDED', 'PENDING_CLOSURE', 'CLOSED'}
 
 # Resource 패턴이 "모든 추적"을 덮는지 확인할 때 쓰는 임의 추적 ARN
 ALL_TRAILS_PROBE = 'arn:aws:cloudtrail:zz-probe-9:000000000000:trail/zz-probe-trail'
@@ -145,6 +156,13 @@ def iam_match(pattern: Any, value: str, ignore_case: bool = False) -> bool:
     return re.match(regex, value, re.IGNORECASE if ignore_case else 0) is not None
 
 
+def _is_broad_principal(value: Any) -> bool:
+    """예외 ARN 패턴이 임의의 역할/사용자를 포함하는지 (``*``, ``arn:aws:iam::*:role/*`` 등)"""
+    if not isinstance(value, str):
+        return True
+    return any(iam_match(value, probe, ignore_case=True) for probe in BROAD_PRINCIPAL_PROBES)
+
+
 def _statement_scope_issues(stmt: Dict[str, Any]) -> Tuple[List[str], List[Dict[str, Any]], str]:
     """
     Deny 문이 모든 추적·모든 주체에 적용되는지 검사
@@ -167,13 +185,20 @@ def _statement_scope_issues(stmt: Dict[str, Any]) -> Tuple[List[str], List[Dict[
         if not isinstance(conditions, dict):
             reasons.append(f"조건 해석 불가: {operator}")
             continue
+        set_operator = operator.split(':', 1)[0] if ':' in operator else ''
         base_operator = operator.split(':')[-1].replace('IfExists', '')
         for key, values in conditions.items():
-            if base_operator in EXCEPTION_OPERATORS and str(key).lower().startswith(PRINCIPAL_KEY_PREFIX):
-                exceptions.append({'sid': sid, 'operator': operator, 'key': key,
-                                   'values': _as_list(values)})
+            values = _as_list(values)
+            if set_operator in ('ForAllValues', 'ForAnyValue'):
+                reasons.append(f"다중값 연산자 조건 {operator} {key}={values}")
+            elif base_operator in EXCEPTION_OPERATORS and str(key).lower() == PRINCIPAL_ARN_KEY:
+                broad = [v for v in values if _is_broad_principal(v)]
+                if broad:
+                    reasons.append(f"예외가 너무 넓음: {operator} {key}={broad}")
+                else:
+                    exceptions.append({'sid': sid, 'operator': operator, 'key': key, 'values': values})
             else:
-                reasons.append(f"조건 {operator} {key}={_as_list(values)}")
+                reasons.append(f"조건 {operator} {key}={values}")
     return reasons, exceptions, sid
 
 
@@ -448,7 +473,7 @@ class GovernanceAuditor:
         node: Dict[str, Any] = {'id': parent_id, 'accounts': [], 'children': []}
         accounts = self._paginate(client, 'list_accounts_for_parent', 'Accounts', ParentId=parent_id)
         node['accounts'] = [
-            {'id': a.get('Id'), 'name': a.get('Name'), 'status': a.get('Status')}
+            {'id': a.get('Id'), 'name': a.get('Name'), 'status': a.get('Status'), 'state': a.get('State')}
             for a in accounts
         ]
         if depth >= 5:  # Organizations 최대 OU 중첩 깊이
@@ -827,6 +852,7 @@ class GovernanceAuditor:
         uncovered_accounts: List[Dict[str, Any]] = []
         uncovered_ous: List[Dict[str, Any]] = []
         member_count = 0
+        excluded_accounts: List[Dict[str, Any]] = []
         for node, path in _walk_tree(tree, []):
             ids = [n['id'] for n in path]
             inherited = set().union(*(full.get(i, set()) for i in ids))
@@ -835,6 +861,10 @@ class GovernanceAuditor:
                                       'missing_actions': sorted(all_actions - inherited)})
             for account in node.get('accounts', []):
                 if account.get('id') == management:
+                    continue
+                state = account.get('state') or account.get('status')
+                if state in INACTIVE_ACCOUNT_STATES:
+                    excluded_accounts.append({'id': account['id'], 'name': account.get('name'), 'state': state})
                     continue
                 member_count += 1
                 chain = ids + [account['id']]
@@ -871,10 +901,14 @@ class GovernanceAuditor:
         if exceptions:
             detail += ' / 예외: ' + '; '.join(
                 f"{e['operator']} {e['key']}={e['values']}" for e in exceptions)
+        if excluded_accounts:
+            detail += f" / 비활성 계정 {len(excluded_accounts)}개 판정 제외: " + ', '.join(
+                f"{a['name'] or a['id']}({a['state']})" for a in excluded_accounts)
         detail += ' / SCP 는 관리 계정에 적용되지 않음 (관리 계정 사용 최소화·별도 통제 필요)'
         return self._finding(
             'GOV-ORG-03', title, status, isms, 'organization', detail,
-            {'member_accounts': member_count, 'uncovered_accounts': uncovered_accounts,
+            {'member_accounts': member_count, 'excluded_accounts': excluded_accounts,
+             'uncovered_accounts': uncovered_accounts,
              'uncovered_ous': uncovered_ous, 'policies': matched,
              'unattached_policies': unattached, 'unanalyzable_policies': unanalyzable,
              'partial_statements': partial_statements, 'exceptions': exceptions,

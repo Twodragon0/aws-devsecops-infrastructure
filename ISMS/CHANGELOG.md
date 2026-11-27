@@ -19,7 +19,8 @@
 
 ### 수정 (리뷰 반영)
 - `governance_audit.py` 거짓 PASS 방지
-  - 조건(`aws:RequestedRegion` 등)·Resource 제한·NotResource 가 있는 Deny 는 부분 적용(partial)으로만 기록, 주체 예외(`ArnNotLike aws:PrincipalArn`)만 허용
+  - 조건(`aws:RequestedRegion` 등)·Resource 제한·NotResource 가 있는 Deny 는 부분 적용(partial)으로만 기록
+  - 주체 예외는 좁은 `aws:PrincipalArn` 패턴만 허용 (다른 `aws:Principal*` 키, `ForAllValues:`/`ForAnyValue:`, `*`·`arn:aws:iam::*:role/*` 같은 넓은 예외는 partial), SUSPENDED·폐쇄 계정은 판정 분모에서 제외
   - 변조 차단 범위를 Root → OU → 계정 상속으로 계정별 계산, 관리 계정 제외 모든 멤버 계정이 4개 액션을 상속해야 PASS, 미적용 OU·계정 목록 기록
   - `GetTrailStatus` 실패 시 CT-02~05, LOG-01 을 UNKNOWN 처리, 고급 이벤트 선택기 연산자(readOnly NotEquals, eventName StartsWith/NotStartsWith, ARN EndsWith 등) 처리
   - LOG-01 은 관리 계정에서만 판별 (ListBuckets 페이지네이션, GetBucketLocation + ExpectedBucketOwner), Control Tower 미발견 시 trusted access 로 FAIL/UNKNOWN 구분
@@ -27,7 +28,7 @@
   - IAM 와일드카드 매처, adaptive 재시도, boto3/botocore 1.35.60 이상, `requirements-dev.txt`
 - `prowler_isms_2025.py`: Prowler 5.x CLI(`-M csv json-ocsf`, `-o`, `-F`, `--compliance kisa_isms_p_2023_korean_aws`, `--ignore-exit-code-3`)로 호출하고 json-ocsf 결과 파싱, `prowler>=5.0.0`
 - `aws_info.py`: 들여쓰기가 깨져 실행되지 않던 문제 복구 (공백만 변경)
-- 테스트 16개 → 51개
+- 테스트 16개 → 70개
 
 ## [개선 버전] - 2024-12
 

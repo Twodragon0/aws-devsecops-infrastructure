@@ -644,7 +644,7 @@ python risk_dashboard.py isms_risk_report_20241201_120000.json
 클라우드 시큐리티 9기 5주차(멀티 계정 거버넌스) 실습용 수집기입니다. `isms-p-cloud-audit/governance_audit.py`는 **읽기 전용 API만** 호출해 아래 항목을 확인하고, ISMS-P 인증기준 번호를 붙인 PASS / FAIL / UNKNOWN 증적을 JSON과 CSV로 남깁니다.
 
 - **Organizations**: 기능 세트(ALL), OU 트리와 계정, 대상(Root/OU/계정)별 SCP·RCP 연결
-- **CloudTrail 변조 차단 SCP**: `cloudtrail:StopLogging`, `DeleteTrail`, `UpdateTrail`, `PutEventSelectors` Deny를 Root → OU → 계정 경로로 상속받는지 계정별로 계산합니다. 관리 계정을 뺀 모든 멤버 계정이 4개 액션을 모두 상속받아야 PASS이며, 빠진 OU·계정을 증적에 남깁니다. 리전 조건(`aws:RequestedRegion` 등)이 붙거나 Resource가 특정 추적으로 좁혀진 Deny는 부분 적용(partial)으로만 기록합니다. `ArnNotLike aws:PrincipalArn` 같은 주체 예외는 허용하되 목록으로 남깁니다. SCP는 관리 계정에 적용되지 않습니다.
+- **CloudTrail 변조 차단 SCP**: `cloudtrail:StopLogging`, `DeleteTrail`, `UpdateTrail`, `PutEventSelectors` Deny를 Root → OU → 계정 경로로 상속받는지 계정별로 계산합니다. 관리 계정을 뺀 모든 멤버 계정이 4개 액션을 모두 상속받아야 PASS이며, 빠진 OU·계정을 증적에 남깁니다. 리전 조건(`aws:RequestedRegion` 등)이 붙거나 Resource가 특정 추적으로 좁혀진 Deny는 부분 적용(partial)으로만 기록합니다. 예외는 `aws:PrincipalArn`에 대한 `ArnNotLike`/`ArnNotEquals`/`StringNotLike`/`StringNotEquals`로 특정 역할을 지정한 경우만 인정하고 목록으로 남깁니다. `aws:PrincipalOrgID`·`aws:PrincipalAccount` 같은 다른 키, `ForAllValues:`/`ForAnyValue:` 연산자, `*`나 `arn:aws:iam::*:role/*`처럼 너무 넓은 예외는 부분 적용입니다. SCP는 관리 계정에 적용되지 않으며, SUSPENDED·폐쇄 중 계정은 판정에서 제외하고 증적에 남깁니다.
 - **조직 추적**: 조직 추적 여부, 다중 리전, 로깅 상태(`GetTrailStatus`), 로그 파일 무결성 검증, SSE-KMS
 - **S3 데이터 이벤트**: 기본/고급 이벤트 선택기에서 GetObject 등 읽기 이벤트를 어떤 버킷에 대해 수집하는지
 - **중앙 로그 아카이브**: 관리 계정에서 실행할 때 추적 버킷이 관리 계정 소유가 아닌지 (`ListBuckets` 페이지네이션, 권한이 없으면 `GetBucketLocation` + `ExpectedBucketOwner`). 다른 계정에서 실행하면 UNKNOWN

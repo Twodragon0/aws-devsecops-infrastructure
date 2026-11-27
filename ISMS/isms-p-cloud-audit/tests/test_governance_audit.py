@@ -672,3 +672,75 @@ def test_clients_use_adaptive_retries(monkeypatch):
     config.aws_profile = None
     client = ga.GovernanceAuditor(config)._client('cloudtrail')
     assert client.meta.config.retries == {'mode': 'adaptive', 'total_max_attempts': 10}
+
+
+class TestTamperDenyExceptionScope:
+    """재리뷰 HIGH: 주체 예외는 좁은 aws:PrincipalArn 패턴만 허용"""
+
+    @pytest.mark.parametrize('condition', [
+        {'StringNotEquals': {'aws:PrincipalOrgID': ORG_ID}},
+        {'StringNotEquals': {'aws:PrincipalType': 'AssumedRole'}},
+        {'ForAnyValue:StringNotLike': {'aws:PrincipalOrgPaths': [f'{ORG_ID}/r-ab12/*']}},
+        {'StringNotEquals': {'aws:PrincipalAccount': MGMT}},
+        {'BoolIfExists': {'aws:PrincipalIsAWSService': 'false'}},
+        {'StringNotEqualsIfExists': {'aws:PrincipalIsAWSService': 'true'}},
+    ], ids=['org-id', 'type', 'org-paths', 'account', 'aws-service-bool', 'aws-service-not'])
+    def test_non_principal_arn_keys_are_partial(self, condition):
+        result = ga.analyze_tamper_deny(deny(ALL_TAMPER, condition=condition))
+        assert result['covered_actions'] == [] and result['exceptions'] == []
+        assert sorted(result['partial_actions']) == sorted(ALL_TAMPER)
+
+    @pytest.mark.parametrize('value', [
+        '*', 'arn:*', 'arn:aws:iam::*:*', 'arn:aws:iam::*:role/*', 'arn:aws:iam::*:user/*',
+        ['arn:aws:iam::*:role/BreakGlass', 'arn:aws:iam::*:role/*'],
+    ], ids=['star', 'arn-star', 'iam-any', 'any-role', 'any-user', 'mixed'])
+    def test_overly_broad_principal_arn_exception_is_partial(self, value):
+        result = ga.analyze_tamper_deny(deny(ALL_TAMPER, condition={'ArnNotLike': {'aws:PrincipalArn': value}}))
+        assert result['covered_actions'] == []
+        assert '예외가 너무 넓음' in result['partial_statements'][0]['reason']
+
+    def test_for_all_values_operator_is_partial(self):
+        result = ga.analyze_tamper_deny(deny(ALL_TAMPER, condition={
+            'ForAllValues:StringNotEquals': {'aws:PrincipalArn': 'arn:aws:iam::*:role/BreakGlass'}}))
+        assert result['covered_actions'] == []
+        assert 'ForAllValues' in result['partial_statements'][0]['reason']
+
+    @pytest.mark.parametrize('operator', ['ArnNotLike', 'ArnNotEquals', 'StringNotLike',
+                                          'StringNotEquals', 'ArnNotLikeIfExists'])
+    def test_narrow_principal_arn_exception_still_full(self, operator):
+        result = ga.analyze_tamper_deny(deny(ALL_TAMPER, condition={
+            operator: {'AWS:PrincipalARN': 'arn:aws:iam::*:role/AWSControlTowerExecution'}}))
+        assert result['missing_actions'] == [] and len(result['exceptions']) == 1
+
+
+def test_suspended_accounts_excluded_from_denominator(stubs, tmp_path):
+    """재리뷰 LOW: SUSPENDED/폐쇄 중 계정은 PASS 분모에서 제외하고 증적에 기록"""
+    stub_identity(stubs, MGMT)
+    org = stubs['organizations'][1]
+    org.add_response('describe_organization', {'Organization': {
+        'Id': ORG_ID, 'FeatureSet': 'ALL', 'MasterAccountId': MGMT}})
+    org.add_response('list_roots', {'Roots': [{'Id': ROOT_ID, 'Name': 'Root', 'PolicyTypes': [
+        {'Type': 'SERVICE_CONTROL_POLICY', 'Status': 'ENABLED'}]}]})
+    org.add_response('list_accounts_for_parent', {'Accounts': [
+        {'Id': MGMT, 'Name': 'management', 'Status': 'ACTIVE'}]}, {'ParentId': ROOT_ID})
+    org.add_response('list_organizational_units_for_parent', {'OrganizationalUnits': [
+        {'Id': OU_ID, 'Name': 'Security'}, {'Id': OU_WORK, 'Name': 'Workloads'}]}, {'ParentId': ROOT_ID})
+    org.add_response('list_accounts_for_parent', {'Accounts': [
+        {'Id': LOG_ARCHIVE, 'Name': 'log-archive', 'Status': 'ACTIVE', 'State': 'ACTIVE'}]}, {'ParentId': OU_ID})
+    org.add_response('list_organizational_units_for_parent', {'OrganizationalUnits': []}, {'ParentId': OU_ID})
+    org.add_response('list_accounts_for_parent', {'Accounts': [
+        {'Id': WORKLOAD, 'Name': 'old-prod', 'Status': 'SUSPENDED', 'State': 'SUSPENDED'},
+        {'Id': '123412341234', 'Name': 'closing', 'Status': 'PENDING_CLOSURE', 'State': 'CLOSED'}]},
+        {'ParentId': OU_WORK})
+    org.add_response('list_organizational_units_for_parent', {'OrganizationalUnits': []}, {'ParentId': OU_WORK})
+    summary = policy_summary('p-scp00000', 'tamper-security', 'SERVICE_CONTROL_POLICY')
+    org.add_response('list_policies', {'Policies': [summary]}, {'Filter': 'SERVICE_CONTROL_POLICY'})
+    add_policy(org, summary, TAMPER_SCP, [ou_target(OU_ID, 'Security')])
+    stub_trail(stubs['cloudtrail'][1], ADVANCED_S3_READ)
+    stubs['s3'][1].add_response('list_buckets', {'Buckets': []})
+    stubs['controltower'][1].add_client_error('list_landing_zones', 'AccessDeniedException', 'denied', 403)
+
+    finding = tamper_finding(build_auditor(stubs, tmp_path).run())
+    assert finding['status'] == 'PASS'
+    assert finding['evidence']['member_accounts'] == 1
+    assert {a['id'] for a in finding['evidence']['excluded_accounts']} == {WORKLOAD, '123412341234'}
