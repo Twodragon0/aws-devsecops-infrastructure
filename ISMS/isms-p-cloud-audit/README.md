@@ -48,7 +48,7 @@ python prowler_isms_2025.py --profile twodragon --region ap-northeast-2 \
 
 `--output-dir` 기본값은 `ISMS_OUTPUT_DIR` 환경 변수, 없으면 `isms-p-cloud-audit/output/` 입니다 (`.gitignore` 대상). Prowler 결과와 `compliance/` 디렉토리도 이 위치에 저장되므로 현재 작업 디렉토리에 계정 ID가 담긴 파일이 남지 않습니다.
 
-위험 평가는 Prowler 결과의 리소스(OCSF `resources[].uid` ARN)를 자산으로 사용합니다. EC2·S3·RDS 인벤토리 자산은 ARN 또는 리소스 이름으로 매칭하고, 그 밖의 리소스(IAM, CloudTrail 등)는 발견 사항에서 자산으로 추가합니다. 위험 등급은 FAIL 발견 사항의 Prowler 심각도(Critical/High/Medium/Low)를 그대로 쓰며 PASS·MANUAL 은 점수를 올리지 않습니다. 보고서 `summary` 에 자산별 등급 수와 함께 `fail_findings_by_severity`, `findings_by_status` 가 들어갑니다.
+위험 평가는 Prowler 결과의 리소스(OCSF `resources[].uid` ARN)를 자산으로 사용합니다. EC2·S3·RDS 인벤토리 자산은 ARN, 리소스 이름 또는 ARN 마지막 부분(예: `instance/i-xxx` → `i-xxx`)으로 매칭하되 이름 매칭은 서비스·유형이 같을 때만 허용하고, 그 밖의 리소스(IAM, CloudTrail 등)는 발견 사항에서 자산으로 추가합니다. 리소스가 여러 개인 발견 사항은 각 자산에 한 번씩 붙습니다. 위험 등급은 FAIL 발견 사항의 Prowler 심각도(Critical/High/Medium/Low)를 그대로 쓰며 PASS·MANUAL·WARNING 은 점수를 올리지 않습니다. 보고서 `summary` 에 자산별 등급 수와 함께 `fail_findings_by_severity`, `findings_by_status`, 자산에 매칭되지 않은 발견 사항(`unassigned_findings`)이 들어가고, `findings[]` 에 `resource_name`, `resource_type` 이 포함됩니다. `--dry-run` 은 출력 디렉토리를 만들지 않습니다.
 
 **출력:**
 - `isms_risk_report_YYYYMMDD_HHMMSS.json`: 위험 평가 보고서 (JSON)

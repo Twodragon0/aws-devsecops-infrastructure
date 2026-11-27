@@ -276,3 +276,91 @@ def test_script_help_exits_zero_and_writes_nothing(tmp_path):
     assert result.returncode == 0, result.stderr
     assert 'usage' in result.stdout and '--dry-run' in result.stdout
     assert list(tmp_path.iterdir()) == []
+
+
+# --- 리뷰 반영: 매칭 정밀도, 다중/누락 리소스, WARNING, dry-run 부작용 ---
+
+EC2_ARN = 'arn:aws:ec2:ap-northeast-2:123456789012:instance/i-0abc1234'
+
+
+def resource(uid: str, name: str, rtype: str, group: str) -> Dict[str, Any]:
+    return {'uid': uid, 'name': name, 'type': rtype, 'region': 'ap-northeast-2', 'group': {'name': group}}
+
+
+def raw_item(status: str, severity: str, resources: List[Dict[str, Any]], check: str = 'c') -> Dict[str, Any]:
+    return {'message': check, 'status_code': status, 'severity': severity, 'metadata': {'event_code': check},
+            'finding_info': {'title': check}, 'resources': resources, 'remediation': {'desc': ''},
+            'unmapped': {'compliance': {}}}
+
+
+def inventory_asset(asset_id: str, asset_type: str, service: str) -> pi.Asset:
+    return pi.Asset(asset_id=asset_id, asset_type=asset_type, asset_name=asset_id, service=service,
+                    region='ap-northeast-2', importance=pi.AssetImportance.MEDIUM,
+                    confidentiality=3, integrity=3, availability=3)
+
+
+def test_same_name_different_type_does_not_merge(assessor):
+    bucket = inventory_asset('example-role', 'S3', 's3')  # 역할과 이름이 같은 버킷
+    finding = assessor._parse_finding(raw_item('FAIL', 'High', [
+        resource(ROLE_ARN, 'example-role', 'AwsIamRole', 'iam')]))
+    derived = assessor.assets_from_findings([finding], [bucket])
+    assert [a.asset_id for a in derived] == [ROLE_ARN]
+    by_id = {a.asset_id: a for a in assessor.assess_risks([bucket, *derived], [finding])}
+    assert by_id['example-role'].total_findings == 0
+    assert by_id[ROLE_ARN].total_findings == 1
+
+
+def test_ec2_instance_arn_matches_inventory_id_without_duplicate(assessor):
+    instance = inventory_asset('i-0abc1234', 'EC2', 'ec2')
+    finding = assessor._parse_finding(raw_item('FAIL', 'Medium', [
+        resource(EC2_ARN, 'web-server', 'AwsEc2Instance', 'ec2')]))
+    assert assessor.assets_from_findings([finding], [instance]) == []
+    (assessment,) = assessor.assess_risks([instance], [finding])
+    assert (assessment.total_findings, assessment.risk_level) == (1, pi.RiskLevel.MEDIUM)
+
+
+def test_multi_resource_finding_attaches_to_each_resource_once(assessor):
+    finding = assessor._parse_finding(raw_item('FAIL', 'Low', [
+        resource(BUCKET_ARN, 'example-bucket', 'AwsS3Bucket', 's3'),
+        resource(ROLE_ARN, 'example-role', 'AwsIamRole', 'iam'),
+        resource(BUCKET_ARN, 'example-bucket', 'AwsS3Bucket', 's3'),
+    ]))
+    assets = assessor.assets_from_findings([finding])
+    assert {a.asset_id for a in assets} == {BUCKET_ARN, ROLE_ARN}
+    by_id = {a.asset_id: a for a in assessor.assess_risks(assets, [finding])}
+    assert by_id[BUCKET_ARN].total_findings == 1 and by_id[ROLE_ARN].total_findings == 1
+
+
+def test_findings_without_resource_are_reported_as_unassigned(assessor):
+    findings = [assessor._parse_finding(item) for item in (
+        raw_item('FAIL', 'High', []),
+        raw_item('PASS', 'Low', [resource('', '', 'Other', 'account')]),
+        raw_item('FAIL', 'Medium', [resource(BUCKET_ARN, 'example-bucket', 'AwsS3Bucket', 's3')]),
+    )]
+    assets = assessor.assets_from_findings(findings)
+    assessments = assessor.assess_risks(assets, findings)
+    summary = pi.json.loads(assessor.generate_risk_report(assessments, assets, findings)
+                            .read_text(encoding='utf-8'))['summary']
+    assert summary['unassigned_findings'] == {
+        'total': 2, 'by_status': {'FAIL': 1, 'PASS': 1},
+        'fail_by_severity': {'Critical': 0, 'High': 1, 'Medium': 0, 'Low': 0}}
+    assert summary['assigned_findings'] + summary['unassigned_findings']['total'] == len(findings)
+
+
+def test_warning_status_does_not_raise_risk(assessor):
+    assert assessor._determine_risk_level('WARNING', 'High') == pi.RiskLevel.INFO
+
+
+def test_report_findings_include_resource_name_and_type(assessor, synthetic_findings):
+    assets = assessor.assets_from_findings(synthetic_findings)
+    report = pi.json.loads(assessor.generate_risk_report(
+        assessor.assess_risks(assets, synthetic_findings), assets, synthetic_findings).read_text(encoding='utf-8'))
+    first = report['findings'][0]
+    assert (first['resource_name'], first['resource_type']) == ('example-role', 'AwsIamRole')
+
+
+def test_dry_run_does_not_create_output_dir(no_scan, capsys, tmp_path):
+    out_dir = tmp_path / 'not-created'
+    pi.main(['--dry-run', '--output-dir', str(out_dir)])
+    assert 'prowler aws' in capsys.readouterr().out
+    assert not out_dir.exists()

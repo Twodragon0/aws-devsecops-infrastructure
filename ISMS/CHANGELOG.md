@@ -33,12 +33,12 @@
 ### 수정 (Prowler 5.52 실 스캔 결과 반영)
 - `prowler_isms_2025.py` 위험 보고서가 FAIL 140건(Critical 2, High 22, Medium 76, Low 40)에도 위험 0건으로 나오던 문제
   - 원인: 자산 ID 는 boto3 인벤토리 값(버킷 이름 등)인데 OCSF `resources[].uid` 는 ARN 이라 424건 중 0건이 자산에 매칭됨, 인벤토리에 없는 IAM·CloudTrail 등 리소스는 평가 대상에서 빠짐
-  - 발견 사항 리소스(ARN)로 자산을 도출하고 인벤토리 자산은 ARN 또는 리소스 이름으로 매칭
-  - FAIL 위험 등급을 Prowler 심각도와 1:1 로 맞춤 (기존: High→Critical 등 한 단계 상향), PASS·MANUAL 은 점수 0
+  - 발견 사항 리소스(ARN)로 자산을 도출하고 인벤토리 자산은 ARN, 리소스 이름, ARN 마지막 부분으로 매칭 (이름 매칭은 서비스·유형이 같을 때만), 다중 리소스 발견 사항은 자산별 한 번씩, 리소스가 없는 발견 사항은 `unassigned_findings` 로 집계
+  - FAIL 위험 등급을 Prowler 심각도와 1:1 로 맞춤 (기존: High→Critical 등 한 단계 상향), PASS·MANUAL·WARNING 은 점수 0, 보고서 `findings[]` 에 `resource_name`, `resource_type` 추가
   - 자산 등급은 점수 등급과 가장 심각한 FAIL 등급 중 높은 쪽, `summary` 에 `fail_findings_by_severity`, `findings_by_status` 추가
 - `python prowler_isms_2025.py --help` 가 도움말 대신 전체 스캔을 시작하던 문제: argparse 추가 (`--profile`, `--region`, `--compliance`, `--output-dir`, `--dry-run`)
-- Prowler 결과와 `compliance/` 가 현재 작업 디렉토리에 생기던 문제: 기본 출력 위치를 `isms-p-cloud-audit/output/` 으로 변경, `.gitignore` 에 `prowler_scan_*`, `isms_risk_report_*`, `compliance/` 추가
-- 테스트 70개 → 80개
+- Prowler 결과와 `compliance/` 가 현재 작업 디렉토리에 생기던 문제: 기본 출력 위치를 `isms-p-cloud-audit/output/` 으로 변경, `--dry-run` 은 출력 디렉토리를 만들지 않음, `.gitignore` 에 `prowler_scan_*`, `isms_risk_report_*`, `compliance/` 추가
+- 테스트 70개 → 87개
 
 ## [개선 버전] - 2024-12
 

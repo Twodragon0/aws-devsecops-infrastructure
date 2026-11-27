@@ -26,7 +26,7 @@ from collections import Counter
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Sequence, Tuple
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from enum import Enum
 
 # 프로젝트 루트를 Python 경로에 추가
@@ -94,6 +94,8 @@ class SecurityFinding:
     remediated_at: Optional[str] = None
     resource_name: str = ''
     resource_type: str = ''
+    # OCSF resources[] 전체 (uid, name, type, service, region). 비어 있으면 위 단일 리소스 필드 사용
+    resources: List[Dict[str, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -142,8 +144,7 @@ class ProwlerISMS2025:
         """
         self.config = config
         self.clients = get_aws_clients(region=config.aws_region, profile=config.aws_profile)
-        self.output_dir = Path(config.output_dir)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.output_dir = Path(config.output_dir)  # 생성은 스캔·보고서 저장 시점에 (--dry-run 은 생성하지 않음)
         
         # 위험 평가 기준 (ISMS-P 2025)
         self.risk_thresholds = {
@@ -192,6 +193,7 @@ class ProwlerISMS2025:
             raise AssetCollectionError("Prowler가 설치되지 않았습니다")
 
         cmd, output_file = self.build_prowler_command(output_format, compliance_framework, services)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"Prowler 스캔 시작: {' '.join(cmd)}")
 
         try:
@@ -333,6 +335,10 @@ class ProwlerISMS2025:
     
     def _parse_ocsf_finding(self, item: Dict[str, Any]) -> SecurityFinding:
         """Prowler 5.x json-ocsf 발견 사항 파싱"""
+        resources = [{
+            'uid': r.get('uid', ''), 'name': r.get('name', ''), 'type': r.get('type', ''),
+            'service': (r.get('group') or {}).get('name', ''), 'region': r.get('region', '')
+        } for r in item.get('resources') or []]
         resource = (item.get('resources') or [{}])[0]
         remediation = item.get('remediation') or {}
         status = item.get('status_code', 'UNKNOWN')
@@ -348,6 +354,7 @@ class ProwlerISMS2025:
             resource_id=resource.get('uid', ''),
             resource_name=resource.get('name', ''),
             resource_type=resource.get('type', ''),
+            resources=resources,
             description=item.get('message', ''),
             remediation=remediation.get('desc', '') if isinstance(remediation, dict) else str(remediation),
             compliance_frameworks=(item.get('unmapped') or {}).get('compliance', []),
@@ -355,7 +362,13 @@ class ProwlerISMS2025:
         )
 
     def _determine_risk_level(self, status: str, severity: str) -> RiskLevel:
-        """위험 등급 결정 (FAIL 은 Prowler 심각도를 그대로 사용, PASS·MANUAL 은 Info)"""
+        """
+        위험 등급 결정
+
+        FAIL 만 위험으로 보고 Prowler 심각도를 그대로 사용합니다. PASS, MANUAL(수동 확인 필요),
+        WARNING(검토 필요, 레거시 형식)은 확인된 취약점이 아니므로 Info 로 두어 점수를 올리지 않습니다
+        (보고서 summary 의 fail_findings_by_severity 와 같은 기준).
+        """
         if status == 'FAIL':
             severity_map = {
                 'critical': RiskLevel.CRITICAL,
@@ -364,10 +377,7 @@ class ProwlerISMS2025:
                 'low': RiskLevel.LOW
             }
             return severity_map.get(severity.lower(), RiskLevel.LOW)
-        elif status == 'WARNING':
-            return RiskLevel.MEDIUM
-        else:
-            return RiskLevel.INFO
+        return RiskLevel.INFO
     
     def identify_assets(self) -> List[Asset]:
         """
@@ -519,6 +529,39 @@ class ProwlerISMS2025:
         else:
             return 3
     
+    @staticmethod
+    def _resource_refs(finding: SecurityFinding) -> List[Dict[str, str]]:
+        """발견 사항의 리소스 목록 (uid 가 없는 리소스 제외)"""
+        refs = finding.resources or [{
+            'uid': finding.resource_id, 'name': finding.resource_name, 'type': finding.resource_type,
+            'service': finding.service, 'region': finding.region
+        }]
+        return [ref for ref in refs if ref.get('uid')]
+
+    @staticmethod
+    def _find_asset(ref: Dict[str, str], assets_by_id: Dict[str, Asset]) -> Optional[Asset]:
+        """
+        리소스에 해당하는 자산 찾기
+
+        uid(ARN) 가 자산 ID 와 같으면 바로 매칭합니다. 리소스 이름이나 ARN 마지막 부분
+        (예: instance/i-xxx → i-xxx, arn:aws:s3:::bucket → bucket)으로 찾을 때는 서비스나
+        유형이 같은 자산만 매칭해 이름이 같은 다른 종류의 리소스가 합쳐지지 않게 합니다.
+        """
+        uid = ref['uid']
+        if uid in assets_by_id:
+            return assets_by_id[uid]
+        tail = uid.rsplit(':', 1)[-1].rsplit('/', 1)[-1]
+        service = (ref.get('service') or '').lower()
+        resource_type = (ref.get('type') or '').lower()
+        for key in (ref.get('name'), tail):
+            asset = assets_by_id.get(key) if key else None
+            if not asset:
+                continue
+            same_type = bool(asset.asset_type) and asset.asset_type.lower() in resource_type
+            if asset.service.lower() == service or same_type:
+                return asset
+        return None
+
     def assets_from_findings(
         self,
         findings: List[SecurityFinding],
@@ -528,27 +571,28 @@ class ProwlerISMS2025:
         Prowler 발견 사항의 리소스(OCSF resources[].uid)로 자산 도출
 
         identify_assets() 인벤토리는 EC2·S3·RDS 만 다루고 ID 가 ARN 이 아니므로(예: 버킷 이름),
-        인벤토리와 ID·이름이 일치하지 않는 리소스만 새 자산으로 추가합니다.
+        인벤토리 자산과 매칭되지 않는 리소스만 새 자산으로 추가합니다.
         """
-        known = {asset.asset_id for asset in known_assets}
-        derived: Dict[str, Asset] = {}
+        assets_by_id = {asset.asset_id: asset for asset in known_assets}
+        derived: List[Asset] = []
         for finding in findings:
-            resource_id = finding.resource_id
-            name_known = bool(finding.resource_name) and finding.resource_name in known
-            if not resource_id or resource_id in known or resource_id in derived or name_known:
-                continue
-            derived[resource_id] = Asset(
-                asset_id=resource_id,
-                asset_type=finding.resource_type or finding.service,
-                asset_name=finding.resource_name or resource_id,
-                service=finding.service,
-                region=finding.region,
-                importance=AssetImportance.MEDIUM,  # 태그 정보가 없으므로 중간 중요도
-                confidentiality=3,
-                integrity=3,
-                availability=3
-            )
-        return list(derived.values())
+            for ref in self._resource_refs(finding):
+                if self._find_asset(ref, assets_by_id):
+                    continue
+                asset = Asset(
+                    asset_id=ref['uid'],
+                    asset_type=ref.get('type') or ref.get('service', ''),
+                    asset_name=ref.get('name') or ref['uid'],
+                    service=ref.get('service', ''),
+                    region=ref.get('region', ''),
+                    importance=AssetImportance.MEDIUM,  # 태그 정보가 없으므로 중간 중요도
+                    confidentiality=3,
+                    integrity=3,
+                    availability=3
+                )
+                assets_by_id[asset.asset_id] = asset
+                derived.append(asset)
+        return derived
 
     def assess_risks(
         self,
@@ -569,13 +613,17 @@ class ProwlerISMS2025:
         
         assessments = []
         
-        # 자산별로 발견 사항 그룹화 (리소스 ARN 또는 이름이 자산 ID 와 일치)
+        # 자산별로 발견 사항 그룹화 (리소스가 여러 개면 각 자산에 한 번씩)
+        assets_by_id = {asset.asset_id: asset for asset in assets}
         asset_findings: Dict[str, List[SecurityFinding]] = {asset.asset_id: [] for asset in assets}
         for finding in findings:
-            for key in (finding.resource_id, finding.resource_name):
-                if key and key in asset_findings:
-                    asset_findings[key].append(finding)
-                    break
+            matched = {}
+            for ref in self._resource_refs(finding):
+                asset = self._find_asset(ref, assets_by_id)
+                if asset:
+                    matched[asset.asset_id] = asset
+            for asset_id in matched:
+                asset_findings[asset_id].append(finding)
         
         # 각 자산에 대한 위험 평가
         for asset in assets:
@@ -675,8 +723,14 @@ class ProwlerISMS2025:
         """
         logger.info("위험 관리 보고서 생성 중...")
         
+        # 어느 자산에도 매칭되지 않은 발견 사항 (리소스 없음 등) - 전체 건수와 맞추기 위해 별도 집계
+        assigned = {id(f) for a in assessments for f in a.findings}
+        unassigned = [f for f in findings if id(f) not in assigned]
+        fail_levels = (RiskLevel.CRITICAL, RiskLevel.HIGH, RiskLevel.MEDIUM, RiskLevel.LOW)
+
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         report_file = self.output_dir / f"isms_risk_report_{timestamp}.json"
+        self.output_dir.mkdir(parents=True, exist_ok=True)
         
         # 보고서 데이터 구성
         report = {
@@ -697,9 +751,18 @@ class ProwlerISMS2025:
                     sum(a.risk_score for a in assessments) / len(assessments) if assessments else 0, 2),
                 'fail_findings_by_severity': {
                     level.value: sum(1 for f in findings if f.status == 'FAIL' and f.risk_level == level)
-                    for level in (RiskLevel.CRITICAL, RiskLevel.HIGH, RiskLevel.MEDIUM, RiskLevel.LOW)
+                    for level in fail_levels
                 },
-                'findings_by_status': dict(Counter(f.status for f in findings))
+                'findings_by_status': dict(Counter(f.status for f in findings)),
+                'assigned_findings': len(findings) - len(unassigned),
+                'unassigned_findings': {
+                    'total': len(unassigned),
+                    'by_status': dict(Counter(f.status for f in unassigned)),
+                    'fail_by_severity': {
+                        level.value: sum(1 for f in unassigned if f.status == 'FAIL' and f.risk_level == level)
+                        for level in fail_levels
+                    }
+                }
             },
             'assets': [asdict(asset) for asset in assets],
             'assessments': [
@@ -740,6 +803,8 @@ class ProwlerISMS2025:
                     'service': f.service,
                     'region': f.region,
                     'resource_id': f.resource_id,
+                    'resource_name': f.resource_name,
+                    'resource_type': f.resource_type,
                     'description': f.description,
                     'remediation': f.remediation,
                     'compliance_frameworks': f.compliance_frameworks
