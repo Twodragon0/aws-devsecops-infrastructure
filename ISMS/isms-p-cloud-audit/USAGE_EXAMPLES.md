@@ -35,7 +35,7 @@ python prowler_isms_2025.py --compliance iso27001_2022_aws --output-dir ./output
 # 저장된 스캔 결과 오프라인 재평가 (Prowler 실행·AWS 호출 없음)
 python prowler_isms_2025.py --input output/prowler_scan_20261127_214833.ocsf.json --output-dir output/reassess
 
-# 읽을 파일과 쓸 디렉토리만 확인
+# 입력 파일 존재 여부와 쓸 디렉토리만 확인 (파일이 없으면 종료 코드 2)
 python prowler_isms_2025.py --input output/prowler_scan_20261127_214833.ocsf.json --dry-run
 
 # 인벤토리 자산 중요도까지 반영 (이때만 --profile 로 AWS 조회)

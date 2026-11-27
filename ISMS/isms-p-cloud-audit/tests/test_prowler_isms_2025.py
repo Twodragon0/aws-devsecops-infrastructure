@@ -265,7 +265,7 @@ def test_default_output_dir_is_gitignored_output_not_cwd(monkeypatch):
     args = pi.build_parser(Config()).parse_args([])
     assert Path(args.output_dir) == Path(pi.__file__).resolve().parent / 'output'
     assert Path(args.output_dir) != Path.cwd()
-    assert args.compliance == pi.ISMS_P_COMPLIANCE and args.dry_run is False
+    assert args.compliance is None and args.dry_run is False
 
 
 def test_script_help_exits_zero_and_writes_nothing(tmp_path):
@@ -502,3 +502,59 @@ def test_input_with_inventory_merges_inventory_assets(saved_scan, tmp_path, monk
     report = only_report(tmp_path / 'out')
     assert report['report_metadata']['total_assets'] == 2  # 버킷은 인벤토리 자산과 중복 생성하지 않음
     assert {a['importance'] for a in report['assets']} == {'High', 'Medium'}
+
+
+# --- --input 인자 처리 경계 사례 ---
+
+def test_input_with_explicit_default_compliance_is_rejected(offline_guard, saved_scan):
+    with pytest.raises(SystemExit) as exc:
+        pi.main(['--input', str(saved_scan), '--compliance', pi.ISMS_P_COMPLIANCE])
+    assert exc.value.code == 2
+
+
+def test_compliance_default_still_applies_without_input(no_scan, capsys, tmp_path):
+    pi.main(['--dry-run', '--output-dir', str(tmp_path / 'out')])
+    cmd = next(line for line in capsys.readouterr().out.splitlines() if line.startswith('prowler ')).split()
+    assert option_values(cmd, '--compliance') == [pi.ISMS_P_COMPLIANCE]
+
+
+def test_help_shows_effective_compliance_default(capsys):
+    with pytest.raises(SystemExit):
+        pi.main(['--help'])
+    assert pi.ISMS_P_COMPLIANCE in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('content', ['{"foo": 1}', '{"findings": "x"}', '"text"', '42'])
+def test_input_unrecognized_format_exits_2_and_writes_no_report(offline_guard, tmp_path, capsys, content):
+    src = tmp_path / 'other.json'
+    src.write_text(content, encoding='utf-8')
+    out_dir = tmp_path / 'out'
+    with pytest.raises(SystemExit) as exc:
+        pi.main(['--input', str(src), '--output-dir', str(out_dir)])
+    assert exc.value.code == 2
+    assert '형식' in capsys.readouterr().err
+    assert not list(out_dir.glob('isms_risk_report_*.json'))
+
+
+@pytest.mark.parametrize('content', ['[]', '{"findings": []}'])
+def test_input_recognized_empty_format_warns_and_writes_report(offline_guard, tmp_path, caplog, content):
+    src = tmp_path / 'empty.json'
+    src.write_text(content, encoding='utf-8')
+    out_dir = tmp_path / 'out'
+    with caplog.at_level('WARNING'):
+        pi.main(['--input', str(src), '--output-dir', str(out_dir)])
+    assert any(r.levelname == 'WARNING' and '0개' in r.getMessage() for r in caplog.records)
+    assert only_report(out_dir)['findings'] == []
+
+
+def test_input_dry_run_missing_file_reports_absence_and_exits_2(offline_guard, tmp_path, capsys):
+    missing = tmp_path / 'nope.json'
+    with pytest.raises(SystemExit) as exc:
+        pi.main(['--input', str(missing), '--output-dir', str(tmp_path / 'out'), '--dry-run'])
+    assert exc.value.code == 2
+    assert f'입력 파일: {missing} (없음)' in capsys.readouterr().out
+
+
+def test_input_dry_run_existing_file_reports_presence(offline_guard, saved_scan, tmp_path, capsys):
+    pi.main(['--input', str(saved_scan), '--output-dir', str(tmp_path / 'out'), '--dry-run'])
+    assert f'입력 파일: {saved_scan} (있음)' in capsys.readouterr().out
