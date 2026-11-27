@@ -1,5 +1,15 @@
 # 변경 이력
 
+## [Prowler 오프라인 재평가·보고서 enum 직렬화] - 2026-11-27
+
+### 추가
+- `prowler_isms_2025.py --input <결과.json>`: 저장된 Prowler 결과(json-ocsf, 레거시 JSON)를 Prowler 실행·AWS 호출 없이 재평가. `--with-inventory` 를 줄 때만 `--profile` 로 인벤토리 조회, `--dry-run` 은 읽을 파일·출력 디렉토리만 출력, `--compliance` 와는 동시 사용 불가
+- `risk_dashboard.py`: 자산 중요도 분포 표시 (`High` 와 이전 형식 `AssetImportance.HIGH` 모두 인식)
+
+### 수정
+- 보고서 JSON 에 자산 중요도가 `"AssetImportance.HIGH"` 로 저장되던 문제: Enum 을 값(`"High"`)으로 직렬화
+- AWS 클라이언트를 처음 사용할 때 생성하도록 변경 (오프라인 모드에서 세션을 만들지 않음)
+
 ## [9기 5주차 거버넌스 증적] - 2026-11-27
 
 ### 추가

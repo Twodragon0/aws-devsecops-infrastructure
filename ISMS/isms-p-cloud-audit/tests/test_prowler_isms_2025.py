@@ -364,3 +364,141 @@ def test_dry_run_does_not_create_output_dir(no_scan, capsys, tmp_path):
     pi.main(['--dry-run', '--output-dir', str(out_dir)])
     assert 'prowler aws' in capsys.readouterr().out
     assert not out_dir.exists()
+
+
+# --- 보고서 enum 직렬화: "AssetImportance.HIGH" 가 아니라 "High" ---
+
+def test_report_serializes_enums_by_value(assessor, synthetic_findings):
+    bucket = pi.Asset(asset_id='example-bucket', asset_type='S3', asset_name='example-bucket', service='s3',
+                      region='ap-northeast-2', importance=pi.AssetImportance.HIGH,
+                      confidentiality=4, integrity=4, availability=5)
+    assets = [bucket, *assessor.assets_from_findings(synthetic_findings, [bucket])]
+    assessments = assessor.assess_risks(assets, synthetic_findings)
+    path = assessor.generate_risk_report(assessments, assets, synthetic_findings)
+    text = path.read_text(encoding='utf-8')
+    assert 'AssetImportance.' not in text and 'RiskLevel.' not in text
+    report = pi.json.loads(text)
+    assert [a['importance'] for a in report['assets']] == ['High', 'Medium']
+    assert {a['risk_level'] for a in report['assessments']} <= {level.value for level in pi.RiskLevel}
+
+
+def test_json_default_handles_enum_and_falls_back_to_str():
+    assert pi._json_default(pi.AssetImportance.CRITICAL) == 'Critical'
+    assert pi._json_default(pi.RiskLevel.LOW) == 'Low'
+    assert pi._json_default(Path('x')) == 'x'
+
+
+# --- risk_dashboard: 새 값 형식과 예전 "AssetImportance.X" 형식 모두 읽기 ---
+
+def test_dashboard_normalizes_new_and_legacy_importance():
+    import risk_dashboard as rd
+    assert rd.normalize_importance('High') == 'High'
+    assert rd.normalize_importance('AssetImportance.HIGH') == 'High'
+    assert rd.normalize_importance('AssetImportance.CRITICAL') == 'Critical'
+    assert rd.normalize_importance('') == 'Unknown'
+    assert rd.normalize_importance(None) == 'Unknown'
+    assert rd.normalize_importance('AssetImportance.BOGUS') == 'Unknown'
+
+
+def test_dashboard_counts_importance_from_old_and_new_reports(tmp_path):
+    import risk_dashboard as rd
+    report = {'summary': {}, 'assessments': [],
+              'assets': [{'importance': 'High'}, {'importance': 'AssetImportance.HIGH'},
+                         {'importance': 'AssetImportance.MEDIUM'}]}
+    src = tmp_path / 'r.json'
+    src.write_text(pi.json.dumps(report), encoding='utf-8')
+    out = tmp_path / 'd.html'
+    rd.generate_html_dashboard(src, out)
+    html = out.read_text(encoding='utf-8')
+    assert 'AssetImportance.' not in html
+    assert rd.count_importance(report['assets']) == {'High': 2, 'Medium': 1}
+
+
+# --- --input: 저장된 스캔 결과 오프라인 재평가 ---
+
+@pytest.fixture
+def offline_guard(monkeypatch):
+    """subprocess·boto3·get_aws_clients 호출 시 실패 (오프라인 보장)"""
+    def boom(*args, **kwargs):
+        raise AssertionError('offline mode must not call subprocess/boto3')
+
+    monkeypatch.setattr(pi.subprocess, 'run', boom)
+    monkeypatch.setattr(pi, 'get_aws_clients', boom)
+    import boto3
+    monkeypatch.setattr(boto3, 'Session', boom)
+    monkeypatch.setattr(boto3, 'client', boom)
+
+
+@pytest.fixture
+def saved_scan(tmp_path):
+    path = tmp_path / 'saved.ocsf.json'
+    path.write_text(pi.json.dumps(SYNTHETIC_OCSF), encoding='utf-8')
+    return path
+
+
+def only_report(out_dir: Path) -> Dict[str, Any]:
+    (path,) = out_dir.glob('isms_risk_report_*.json')
+    return pi.json.loads(path.read_text(encoding='utf-8'))
+
+
+def test_input_reassesses_saved_scan_without_subprocess_or_boto3(offline_guard, saved_scan, tmp_path, capsys):
+    out_dir = tmp_path / 'out'
+    pi.main(['--input', str(saved_scan), '--output-dir', str(out_dir)])
+    report = only_report(out_dir)
+    summary = report['summary']
+    assert (report['report_metadata']['total_assets'], report['report_metadata']['total_findings']) == (2, 8)
+    assert (summary['critical_risks'], summary['medium_risks']) == (1, 1)
+    assert summary['fail_findings_by_severity'] == {'Critical': 1, 'High': 1, 'Medium': 1, 'Low': 1}
+    assert {a['importance'] for a in report['assets']} == {'Medium'}
+    assert '총 자산 수: 2' in capsys.readouterr().out
+
+
+def test_input_accepts_legacy_prowler_json(offline_guard, tmp_path):
+    legacy = [{'CheckID': 'x', 'Status': 'FAIL', 'Severity': 'high', 'ServiceName': 's3',
+               'Region': 'ap-northeast-2', 'ResourceId': 'b', 'Message': 'm', 'Remediation': 'r'}]
+    src = tmp_path / 'legacy.json'
+    src.write_text(pi.json.dumps(legacy), encoding='utf-8')
+    pi.main(['--input', str(src), '--output-dir', str(tmp_path / 'out')])
+    report = only_report(tmp_path / 'out')
+    assert report['report_metadata']['total_findings'] == 1
+    assert report['summary']['fail_findings_by_severity']['High'] == 1
+
+
+def test_input_dry_run_reports_paths_and_writes_nothing(offline_guard, saved_scan, tmp_path, capsys):
+    out_dir = tmp_path / 'out'
+    pi.main(['--input', str(saved_scan), '--output-dir', str(out_dir), '--dry-run'])
+    out = capsys.readouterr().out
+    assert str(saved_scan) in out and str(out_dir) in out
+    assert not out_dir.exists()
+    assert not any(line.startswith('prowler ') for line in out.splitlines())
+
+
+def test_input_missing_file_exits_nonzero(offline_guard, tmp_path):
+    with pytest.raises(SystemExit) as exc:
+        pi.main(['--input', str(tmp_path / 'nope.json'), '--output-dir', str(tmp_path / 'out')])
+    assert exc.value.code != 0
+
+
+def test_input_conflicts_with_scan_options_and_with_inventory_needs_input(offline_guard, saved_scan, capsys):
+    with pytest.raises(SystemExit) as exc:
+        pi.main(['--input', str(saved_scan), '--compliance', 'iso27001_2022_aws'])
+    assert exc.value.code == 2
+    with pytest.raises(SystemExit) as exc:
+        pi.main(['--with-inventory'])
+    assert exc.value.code == 2
+
+
+def test_input_with_inventory_merges_inventory_assets(saved_scan, tmp_path, monkeypatch):
+    monkeypatch.setattr(pi.subprocess, 'run', lambda *a, **k: (_ for _ in ()).throw(AssertionError('scan')))
+    inventory = [pi.Asset(asset_id='example-bucket', asset_type='S3', asset_name='example-bucket', service='s3',
+                          region='ap-northeast-2', importance=pi.AssetImportance.HIGH,
+                          confidentiality=4, integrity=4, availability=5)]
+    seen = []
+    monkeypatch.setattr(pi, 'get_aws_clients', lambda **kw: seen.append(kw) or object())
+    monkeypatch.setattr(pi.ProwlerISMS2025, 'identify_assets', lambda self: (self.clients, inventory)[1])
+    pi.main(['--input', str(saved_scan), '--with-inventory', '--profile', 'audit',
+             '--output-dir', str(tmp_path / 'out')])
+    assert seen and seen[0]['profile'] == 'audit'
+    report = only_report(tmp_path / 'out')
+    assert report['report_metadata']['total_assets'] == 2  # 버킷은 인벤토리 자산과 중복 생성하지 않음
+    assert {a['importance'] for a in report['assets']} == {'High', 'Medium'}
