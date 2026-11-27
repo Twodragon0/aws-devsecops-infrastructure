@@ -22,9 +22,18 @@ export AWS_PROFILE=twodragon  # 기본값
 export AWS_REGION=ap-northeast-2  # 기본값
 export ISMS_OUTPUT_DIR=./output
 
-# 전체 평가 실행 (자산 식별 + 보안 점검 + 위험 평가)
+# 전체 평가 실행 (자산 식별 + 보안 점검 + 위험 평가), 결과는 output/ 에 저장
 python prowler_isms_2025.py
+
+# 옵션 확인, 스캔 없이 Prowler 명령만 출력
+python prowler_isms_2025.py --help
+python prowler_isms_2025.py --dry-run --profile twodragon --region ap-northeast-2
+
+# 다른 컴플라이언스·출력 디렉토리로 실행
+python prowler_isms_2025.py --compliance iso27001_2022_aws --output-dir ./output/iso27001
 ```
+
+`--output-dir` 기본값은 `ISMS_OUTPUT_DIR`, 없으면 `isms-p-cloud-audit/output/` (`.gitignore` 대상) 입니다.
 
 **출력:**
 - `isms_risk_report_YYYYMMDD_HHMMSS.json`: 위험 평가 보고서

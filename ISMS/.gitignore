@@ -4,6 +4,10 @@
 *.json
 output/
 logs/
+# Prowler 결과 (계정 ID·리소스 이름 포함, 커밋 금지)
+prowler_scan_*
+isms_risk_report_*
+isms-p-cloud-audit/compliance/
 
 # Python
 __pycache__/

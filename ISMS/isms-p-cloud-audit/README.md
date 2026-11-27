@@ -34,15 +34,21 @@ ISMS-P 2025 가이드에 맞춘 종합적인 자산 식별 및 위험 평가 시
 # 1. AWS SSO 로그인 (필수)
 aws sso login --profile twodragon
 
-# 2. 기본 실행 (프로필: twodragon, 리전: ap-northeast-2)
+# 2. 기본 실행 (프로필: twodragon, 리전: ap-northeast-2, 결과: 스크립트 옆 output/)
 python prowler_isms_2025.py
 
-# 3. 환경 변수로 설정 변경 (선택적)
-export AWS_PROFILE=twodragon
-export AWS_REGION=ap-northeast-2
-export ISMS_OUTPUT_DIR=./output
-python prowler_isms_2025.py
+# 3. 옵션 확인 / 스캔 없이 실행될 Prowler 명령만 출력
+python prowler_isms_2025.py --help
+python prowler_isms_2025.py --dry-run
+
+# 4. 프로필·리전·컴플라이언스·출력 디렉토리 지정
+python prowler_isms_2025.py --profile twodragon --region ap-northeast-2 \
+  --compliance kisa_isms_p_2023_korean_aws --output-dir ./output
 ```
+
+`--output-dir` 기본값은 `ISMS_OUTPUT_DIR` 환경 변수, 없으면 `isms-p-cloud-audit/output/` 입니다 (`.gitignore` 대상). Prowler 결과와 `compliance/` 디렉토리도 이 위치에 저장되므로 현재 작업 디렉토리에 계정 ID가 담긴 파일이 남지 않습니다.
+
+위험 평가는 Prowler 결과의 리소스(OCSF `resources[].uid` ARN)를 자산으로 사용합니다. EC2·S3·RDS 인벤토리 자산은 ARN, 리소스 이름 또는 ARN 마지막 부분(예: `instance/i-xxx` → `i-xxx`)으로 매칭하되 이름 매칭은 서비스·유형이 같을 때만 허용하고, 그 밖의 리소스(IAM, CloudTrail 등)는 발견 사항에서 자산으로 추가합니다. 리소스가 여러 개인 발견 사항은 각 자산에 한 번씩 붙습니다. 위험 등급은 FAIL 발견 사항의 Prowler 심각도(Critical/High/Medium/Low)를 그대로 쓰며 PASS·MANUAL·WARNING 은 점수를 올리지 않습니다. 보고서 `summary` 에 자산별 등급 수와 함께 `fail_findings_by_severity`, `findings_by_status`, 자산에 매칭되지 않은 발견 사항(`unassigned_findings`)이 들어가고, `findings[]` 에 `resource_name`, `resource_type` 이 포함됩니다. `--dry-run` 은 출력 디렉토리를 만들지 않습니다.
 
 **출력:**
 - `isms_risk_report_YYYYMMDD_HHMMSS.json`: 위험 평가 보고서 (JSON)
